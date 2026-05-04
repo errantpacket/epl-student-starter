@@ -27,25 +27,21 @@ import ViewSource from '@widgets/ViewSource.svelte';
   { id: 'serial',      label: '3. Attach the serial console' },
   { id: 'devcontainer', label: '4. The devcontainer as soft hardware' },
   { id: 'compare',     label: '5. Compare the two environments side by side' },
-  { id: 'failsafe',    label: '6. Recovery method 1 — OpenWrt failsafe via serial' },
-  { id: 'recovery',    label: '7. Recovery method 2 — U-Boot HTTP recovery' },
+  { id: 'failsafe',    label: '6. Recovery method 1: OpenWrt failsafe via serial' },
+  { id: 'recovery',    label: '7. Recovery method 2: U-Boot HTTP recovery' },
   { id: 'validate',    label: 'Run validation' },
 ]} />
 
-# Lab 01 — Hardware Familiarization & Recovery
-
-**Duration: 60 minutes**
-
-You have a GL.iNet Mango (GL-MT300N-V2) running OpenWrt on a 16MB NOR flash chip in
-front of you, and a VS Code devcontainer (or Codespace) hosting the engagement
-platform — a Debian operator console with an OpenWrt 23.05.3 rootfs available as a
+You have a GL.iNet Mango (GL-MT300N-V2) running OpenWrt on a 16 MB NOR flash chip
+in front of you, and a VS Code Dev Container (or Codespace) hosting the engagement
+platform: a Debian operator console with an OpenWrt 23.05.3 rootfs available as a
 sibling container. By the end of this lab you will have SSH'd into the Mango,
 exec'd into the OpenWrt sibling, attached a serial console to the Mango, and
 exercised both software-level (failsafe) and bootloader-level (`u-boot_mod` HTTP)
 recovery paths.
 
 The core lesson: **you can break OpenWrt and recover it**. Failsafe mode, U-Boot HTTP
-recovery (`u-boot_mod`), and serial console are not emergency last resorts — they are
+recovery (`u-boot_mod`), and serial console are not emergency last resorts. They are
 normal tools. Practice them before you need them.
 
 > **Order matters here.** Serial console is set up in Step 3, *before* the recovery
@@ -54,8 +50,8 @@ normal tools. Practice them before you need them.
 
 ### Where each step runs
 
-This lab is marked **`codespaces: "partial"`** — about half the steps need physical
-access to your bench (Mango on local LAN, USB-UART adapter), while the rest run
+This lab is marked **`codespaces: "partial"`** because about half the steps need
+physical access to your bench (Mango on local LAN, USB-UART adapter); the rest run
 fine in either a local Dev Container or a GitHub Codespace. Use this map to plan
 which terminal lives where.
 
@@ -64,11 +60,11 @@ which terminal lives where.
 | 1. Physical inspection | yes | no |
 | 2. SSH to Mango        | yes (Mango is on your local LAN) | no |
 | 3. Serial console      | yes (USB-UART is local hardware) | no |
-| 4. Devcontainer + sibling | no | **yes** |
+| 4. Dev Container + sibling | no | **yes** |
 | 5. Side-by-side compare | yes (Mango SSH from laptop) | yes (sibling lives in operator console) |
 | 6. Failsafe via serial | yes | no |
 | 7. U-Boot HTTP recovery | yes | no |
-| Validation             | depends — see below | — |
+| Validation             | depends (see below) | depends (see below) |
 
 For Codespace students: keep your laptop terminal open for Mango SSH and serial
 work. The Codespace browser tab is your "operator console" and is where Steps 4
@@ -79,7 +75,7 @@ section.
 
 ## Learning objectives
 
-- Navigate the Mango hardware: ports, reset button, testpoints, USB.
+- Identify the Mango hardware features: ports, reset button, testpoints, USB.
 - Attach the serial console to the Mango (TP1–TP4) and observe boot.
 - SSH into the Mango, exec into an OpenWrt rootfs sibling container, and recognize
   that OpenWrt is OpenWrt regardless of the container/embedded boundary.
@@ -96,7 +92,7 @@ section.
 
 Before starting this lab confirm all of the following.
 
-**Software on your laptop (always required — the bench-side work):**
+**Software on your laptop (always required for the bench-side work):**
 
 ```sh
 # A serial terminal client is installed (any one of these works)
@@ -107,17 +103,17 @@ command -v screen || command -v picocom || command -v minicom || command -v tio 
 command -v ssh
 ```
 
-**Operator console — pick one** (use the *Environment* toggle at the top of
+**Operator console: pick one** (use the *Environment* toggle at the top of
 this page to filter the rest of the lab to your chosen path):
 
 <EnvBlock env="local-dev">
 
 - **Local Dev Container** (recommended for the full course). Install
-  [Docker Desktop][docker-desktop] (or [Podman Desktop][podman-desktop] —
-  also free, lighter on macOS/Windows) and the [Dev Containers VS Code
+  [Docker Desktop][docker-desktop] (or [Podman Desktop][podman-desktop],
+  free and lighter on macOS or Windows) and the [Dev Containers VS Code
   extension][devc-ext]. Open this repo in VS Code and click "Reopen in
-  Container." First build is ~3-5 min; the pre-pulled OpenWrt rootfs
-  sibling image takes ~15 MB on top.
+  Container." First build takes 3 to 5 minutes; the pre-pulled OpenWrt
+  rootfs sibling image takes about 15 MB on top.
 
 </EnvBlock>
 
@@ -126,19 +122,19 @@ this page to filter the rest of the lab to your chosen path):
 - **GitHub Codespace** (zero local install). Click **"Open in Codespaces"**
   on the lab page or visit
   [`codespaces.new/errantpacket/epl-student-starter`][cs-link]. The free
-  [personal Codespaces tier][cs-pricing] (120 core-hours/month) is more
+  [personal Codespaces tier][cs-pricing] (120 core-hours per month) is more
   than enough for this workshop. No Docker needed on your laptop.
 
 </EnvBlock>
 
 <EnvBlock env="minimal-local">
 
-- **Minimal local — Lab 01 only** (just docker, no VS Code, no devcontainer).
-  Lab 01 only needs the OpenWrt rootfs sibling. If you don't want to install
-  the Dev Containers extension or build the full operator console yet, the
-  bare path is two commands. **You will need the full operator console
-  starting in Lab 04** (for wrangler/tailscale/cloudflared) — plan
-  accordingly.
+- **Minimal local (Lab 01 only)**. Just docker, no VS Code, no Dev
+  Container. Lab 01 only needs the OpenWrt rootfs sibling. If you don't
+  want to install the Dev Containers extension or build the full
+  operator console yet, the bare path is two commands. **You will need
+  the full operator console starting in Lab 04** for wrangler,
+  tailscale, and cloudflared, so plan accordingly.
   ```sh
   # Pull the rootfs once (~15 MB)
   docker pull openwrt/rootfs:x86-64-23.05.3
@@ -183,11 +179,11 @@ docker images openwrt/rootfs    # should show the x86-64-23.05.3 tag
 
 - 1× GL.iNet Mango (GL-MT300N-V2) with DC power.
 - 1× Ethernet cable, laptop ↔ Mango **LAN (black)** port.
-- 1× **3.3V** USB-to-UART adapter (FTDI, CP2102, CH340, etc.). **NOT a 5V adapter
-  — 5V will damage the Mango PCB.**
+- 1× **3.3 V** USB-to-UART adapter (FTDI, CP2102, CH340, or similar).
+  **Not a 5 V adapter. 5 V will damage the Mango PCB.**
 - 4× dupont wires or probe clips.
-- USB drive (16GB+, ext4-formattable) — used from Lab 03 onward; not strictly
-  needed in Lab 01 but bring it.
+- USB drive (16 GB or larger, ext4-formattable). Used from Lab 03 onward;
+  not strictly needed in Lab 01, but bring it.
 
 **Network reachability:**
 
@@ -224,16 +220,16 @@ chmod +x courses/engagement-platform-labs/labs/lab01-hardware-familiarization/va
 
 Power on the Mango and examine it while it boots.
 
-**Ports (approximate — exact arrangement varies by hardware revision; verify against
-your unit):**
+**Ports** (approximate; exact arrangement varies by hardware revision, so verify
+against your unit):
 
-- USB-A port (typically on the side) — ExtRoot drive lives here in later labs.
-- Reset button (recessed) — held at power-on for ≥5s, triggers `u-boot_mod` HTTP
-  recovery (Step 7). Note: reset is **not** used for OpenWrt failsafe; failsafe is
-  entered via serial keystroke (Step 6).
-- WAN (orange port) — uplink to existing network.
-- LAN (black port) — direct device connection to your laptop.
-- DC barrel jack — 5V/1A power input.
+- USB-A port (typically on the side). The ExtRoot drive lives here in later labs.
+- Reset button (recessed). Held at power-on for 5 seconds or longer, triggers
+  `u-boot_mod` HTTP recovery (Step 7). Reset is **not** used for OpenWrt failsafe;
+  failsafe is entered via a serial keystroke (Step 6).
+- WAN (orange port). Uplink to an existing network.
+- LAN (black port). Direct device connection to your laptop.
+- DC barrel jack. 5 V / 1 A power input.
 
 **LED sequence during stock boot (approximate; verify against your firmware):**
 
@@ -243,14 +239,14 @@ White, flashing slowly   → OpenWrt init running
 White, solid             → Normal operation
 ```
 
-We use the serial output as the authoritative timing reference in later steps —
-LED cadence is a useful at-a-glance signal but not the ground truth.
+Later steps use the serial output as the authoritative timing reference. LED
+cadence is a useful at-a-glance signal but not the ground truth.
 
-**Dimensions:** 58 mm × 58 mm × 22 mm, weight ~43 g. It fits in a coat pocket.
-This is intentional for the drop-device role it plays from Lab 03 onward.
+**Dimensions.** 58 mm × 58 mm × 22 mm, about 43 g. It fits in a coat pocket. The
+form factor is intentional for the drop-device role it plays from Lab 03 onward.
 
-**GPIO testpoints (used for serial in Step 3):** TP1–TP4 on the PCB near the SoC.
-We'll connect to these in Step 3 — locate them visually now.
+**GPIO testpoints** (used for serial in Step 3): TP1 through TP4 on the PCB near
+the SoC. You connect to these in Step 3; locate them visually now.
 
 </LabStep>
 
@@ -259,18 +255,19 @@ We'll connect to these in Step 3 — locate them visually now.
 Connect your laptop's Ethernet port to the **LAN (black)** port on the Mango.
 Set your laptop's Ethernet interface to DHCP (or static `192.168.8.2/24`).
 
-**Verify basic access (stock GL.iNet firmware — the factory default students receive):**
+**Verify basic access** (stock GL.iNet firmware, the factory default that students
+receive):
 
 ```sh
 # Admin UI (GL.iNet stock web interface)
 # Open in browser: http://192.168.8.1
 
-# SSH — stock GL.iNet firmware has SSH enabled on LAN by default
+# SSH. Stock GL.iNet firmware has SSH enabled on LAN by default.
 ssh root@<span data-profile-ip>192.168.8.1</span>
 # Default password: <span data-profile-password>goodlife</span>  (printed on device label)
 ```
 
-> **Note — pre-flashed / pure OpenWrt units.** If your Mango was previously flashed with
+> **Pre-flashed and pure-OpenWrt units.** If your Mango was previously flashed with
 > upstream OpenWrt (e.g., an instructor's reference unit, or a self-paced student who
 > already ran Lab 02), the defaults differ:
 >
@@ -297,8 +294,8 @@ comparison.
 > **Codespace users:** SSH to the Mango must be from your **laptop** terminal, not
 > from the Codespace. The Mango lives on your local LAN (`192.168.8.0/24` or
 > `192.168.1.0/24`); the Codespace is a remote VM that can't see it directly.
-> Lab 05 puts the Mango on a Tailscale tailnet — once that's done, the Codespace
-> *can* reach the Mango by tailnet hostname. For Lab 01, just use the laptop.
+> Lab 05 puts the Mango on a Tailscale tailnet. Once that's done, the Codespace
+> *can* reach the Mango by tailnet hostname. For Lab 01, use the laptop.
 
 </EnvBlock>
 
@@ -329,18 +326,17 @@ free -m
 opkg list-installed | wc -l
 ```
 
-**Key observation:** note the `DISTRIB_TARGET` field. It will say `ramips/mt76x8`.
-That same target string drives the firmware images you'll build with ImageBuilder
-in Lab 02 — both the operator-platform image (x86/64 target, conceptual) and the
-real Mango drop image (ramips/mt76x8) come off the same baseline.
+**Key observation.** Note the `DISTRIB_TARGET` field. It will say `ramips/mt76x8`.
+That target string drives the Mango sysupgrade image you build in Lab 02 with
+ImageBuilder.
 
 > **Background reading.** [OpenWrt's UCI][uci-wiki] is the unified config system
 > that ties together `/etc/config/*`, `/etc/init.d/*`, and the `uci` CLI. It is
-> the single most important concept in the OpenWrt mental model and you'll touch
-> it in every Mango-side lab. Skim it now if you haven't met UCI before.
+> the most important concept in the OpenWrt mental model, and you'll touch it
+> in every Mango-side lab. Skim it now if you haven't met UCI before.
 >
-> [opkg][opkg-wiki] is the package manager. Read just the "Useful commands"
-> section — that's all you need today. The full feed system shows up in Lab 02.
+> [opkg][opkg-wiki] is the package manager. The "Useful commands" section is
+> all you need today; the full feed system shows up in Lab 02.
 
 [uci-wiki]: https://openwrt.org/docs/guide-user/base-system/uci
 [opkg-wiki]: https://openwrt.org/docs/guide-user/additional-software/opkg
@@ -349,10 +345,10 @@ real Mango drop image (ramips/mt76x8) come off the same baseline.
 
 <LabStep lab="lab01" id="serial" num={3} title="Attach the serial console">
 
-Serial gives you direct UART access to U-Boot and the kernel — earlier than any
-network or OpenWrt init. We attach it now because **Step 6 (failsafe) and Step 7
-(HTTP recovery) both depend on serial being present**. If you skip this step, you
-will not be able to complete the recovery exercises.
+Serial gives you direct UART access to U-Boot and the kernel, earlier than any
+network or OpenWrt init. Attach it now because **Step 6 (failsafe) and Step 7
+(HTTP recovery) both depend on serial being present**. If you skip this step,
+you will not be able to complete the recovery exercises.
 
 **Connection parameters:**
 
@@ -364,22 +360,22 @@ Stop bits:    1
 Flow control: None
 ```
 
-**Verified UART pinout on the GL-MT300N-V2 PCB (TP1–TP4 testpoints):**
+**Verified UART pinout on the GL-MT300N-V2 PCB (testpoints TP1 through TP4):**
 
 ```
-TP1 — 3.3V   (do NOT connect to your adapter's VCC unless the adapter requires it;
+TP1: 3.3V    (do NOT connect to your adapter's VCC unless the adapter requires it;
               typical USB-UART adapters self-power and TP1 should be left floating)
-TP2 — GND    → adapter GND
-TP3 — TX     → adapter RX  (this is what the Mango sends)
-TP4 — RX     → adapter TX  (this is what the Mango receives)
+TP2: GND     -> adapter GND
+TP3: TX      -> adapter RX  (this is what the Mango sends)
+TP4: RX      -> adapter TX  (this is what the Mango receives)
 ```
 
-> **Verified 2026-05-03** on instructor's GL-MT300N-V2 reference unit by bidirectional
-> serial confirmed at 115200 8N1. U-Boot, kernel, and OpenWrt login output all
-> visible on TP3. If silk-screen labels on a particular unit are unclear, confirm GND
-> with a multimeter (TP2 rings to the DC barrel jack ground ring) and identify TX
-> activity during boot with a logic probe. Do NOT guess — incorrect connections can
-> damage the device or adapter.
+> **Verified 2026-05-03** on the instructor's GL-MT300N-V2 reference unit.
+> Bidirectional serial confirmed at 115200 8N1. U-Boot, kernel, and OpenWrt login
+> output all visible on TP3. If silk-screen labels on a particular unit are
+> unclear, confirm GND with a multimeter (TP2 rings to the DC barrel jack ground
+> ring) and identify TX activity during boot with a logic probe. Do not guess.
+> Incorrect connections can damage the device or adapter.
 
 **Connect:**
 
@@ -406,59 +402,62 @@ screen -L -Logfile /tmp/mango-serial.log /dev/ttyUSB0 115200
 > workshop.
 
 **Power-cycle the Mango with serial attached.** You will see U-Boot messages, the
-kernel boot sequence, and the OpenWrt login prompt — all over the serial line.
-Notable lines to watch for (we'll reference these in Steps 6 and 7):
+kernel boot sequence, and the OpenWrt login prompt, all over the serial line.
+Notable lines to watch for (referenced again in Steps 6 and 7):
 
-- `RESET button is pressed for: 0 second(s)` — U-Boot polling the reset line
-- `Autobooting in: 2 s (type 'gl' to run U-Boot console)` — 2-second U-Boot interrupt window
-- `Press the [f] key and hit [enter] to enter failsafe mode` — OpenWrt failsafe entry banner (~10s wall-clock from power-on)
+- `RESET button is pressed for: 0 second(s)`. U-Boot polling the reset line.
+- `Autobooting in: 2 s (type 'gl' to run U-Boot console)`. 2-second U-Boot
+  interrupt window.
+- `Press the [f] key and hit [enter] to enter failsafe mode`. OpenWrt failsafe
+  entry banner, around 10 seconds of wall-clock from power-on.
 
-If you see all three of these, your serial is working. Press Enter at the OpenWrt
-login prompt to confirm bidirectional input works.
+If you see all three of these, your serial is working. Press Enter at the
+OpenWrt login prompt to confirm bidirectional input works.
 
-> **Background reading.** [OpenWrt's serial-console guide][serial-wiki] documents
-> the full pinout discovery process for unfamiliar hardware. The
+> **Background reading.** [OpenWrt's serial-console guide][serial-wiki]
+> documents the full pinout discovery process for unfamiliar hardware. The
 > [`u-boot_mod` README][ubm] (linked again in Step 7) covers the bootloader
-> commands available at the `gl ar7240>` prompt — `printenv`, `bootm`,
-> `tftpboot`, `setenv`/`saveenv` — useful if you need to escape an unbootable
-> kernel without HTTP recovery.
+> commands available at the `gl ar7240>` prompt (`printenv`, `bootm`,
+> `tftpboot`, `setenv`, `saveenv`), useful if you need to escape an
+> unbootable kernel without HTTP recovery.
 
 [serial-wiki]: https://openwrt.org/docs/techref/hardware/port.serial
 
 </LabStep>
 
-<LabStep lab="lab01" id="devcontainer" num={4} title="The devcontainer as soft hardware">
+<LabStep lab="lab01" id="devcontainer" num={4} title="The Dev Container as soft hardware">
 
-The engagement-platform devcontainer is **two-tier**:
+The engagement-platform Dev Container is **two-tier**:
 
-- **Outer container — Debian operator console.** This is what VS Code (locally
+- **Outer container: Debian operator console.** This is what VS Code (locally
   *or* in a Codespace) attaches to. It hosts the engagement stack: tailscale,
-  cloudflared, wrangler, python, jq. It's Debian-based because vscode-server
-  is a glibc binary and OpenWrt's musl userland can't run it.
-- **Sibling container — OpenWrt rootfs.** Launched via docker-in-docker from
-  the outer console. This is the soft-hardware companion to the Mango — same
-  OpenWrt 23.05.3 userland, just on x86-64 with no flash constraint. Step 5's
-  comparison runs here.
+  cloudflared, wrangler, python, jq. Debian-based because vscode-server is a
+  glibc binary, and OpenWrt's musl userland cannot run it.
+- **Sibling container: OpenWrt rootfs.** Launched via docker-in-docker from
+  the outer console. This is the soft-hardware companion to the Mango: the
+  same OpenWrt 23.05.3 userland, on x86-64, with no flash constraint. Step
+  5's comparison runs here.
 
 From a shell prompt, the OpenWrt sibling is indistinguishable from the Mango
-except for target architecture and available storage. UCI, opkg, /etc/init.d,
-[procd][procd-wiki] — identical. **The OS is the OS.**
+except for target architecture and available storage. UCI, opkg,
+`/etc/init.d`, and [procd][procd-wiki] are identical. **The OS is the OS.**
 
 <EnvBlock env="minimal-local">
 
-> **Minimal-local students:** Step 4a (operator console attach) doesn't apply
-> to you — there's no Debian outer to attach to. Skip ahead to **Step 4b**;
-> the `docker run` invocation there is your entry point. Everything from
-> Step 4b onward is identical regardless of which pre-state path you took.
+> **Minimal-local students:** Step 4a (operator console attach) does not
+> apply to you. There is no Debian outer to attach to. Skip ahead to **Step
+> 4b**; the `docker run` invocation there is your entry point. Everything
+> from Step 4b onward is identical regardless of which pre-state path you
+> took.
 
 </EnvBlock>
 
 > **Background reading.** The [Dev Containers specification][devcontainers-spec]
-> is what `devcontainer.json` conforms to — the same file works for VS Code
+> is what `devcontainer.json` conforms to. The same file works for VS Code
 > Dev Containers, GitHub Codespaces, IntelliJ Gateway, DevPod, and others.
 > Codespaces is just a hosted runtime for that spec; see [GitHub's
 > Codespaces docs][cs-docs] for the lifecycle (auto-stop after 30 min idle,
-> auto-delete after 30 days inactive, prebuilds, etc.).
+> auto-delete after 30 days inactive, prebuilds, and so on).
 
 [procd-wiki]: https://openwrt.org/docs/techref/procd
 [devcontainers-spec]: https://containers.dev/
@@ -474,8 +473,8 @@ Local Dev Containers:
    ```sh
    code /path/to/engagement-platform-labs
    ```
-2. VS Code detects `.devcontainer/devcontainer.json` and prompts:
-   **"Reopen in Container"** — click it. (Requires the *Dev Containers*
+2. VS Code detects `.devcontainer/devcontainer.json` and prompts
+   **"Reopen in Container."** Click it. (Requires the *Dev Containers*
    extension and a running Docker or Podman daemon.)
 3. The Debian operator console builds and starts. Open a new terminal
    (`Ctrl+backtick`); you are at a Debian shell:
@@ -526,27 +525,27 @@ Once inside the OpenWrt sibling:
 
 ```sh
 cat /etc/openwrt_release
-# DISTRIB_ID='OpenWrt'      (single-quoted — upstream 23.05.3 format)
+# DISTRIB_ID='OpenWrt'      (single-quoted; upstream 23.05.3 format)
 # DISTRIB_TARGET='x86/64'   (the sibling is x86/64; the Mango is ramips/mt76x8)
 
 opkg update
 opkg list-installed | wc -l
 ```
 
-**Teaching moment:** the bare upstream rootfs sibling has **~127 packages**
-(verified 2026-05-04 on `openwrt/rootfs:x86-64-23.05.3`). The Mango on stock
-GL.iNet firmware has **~150-200**. Both are roughly the same order of
-magnitude — the contrast isn't *count*, it's *what's installed*: the Mango
-adds GL.iNet's web UI, vendor services, and additional drivers on top of the
-upstream baseline. In Lab 02 you'll build a custom image that strips the
-GL.iNet additions and adds the engagement-stack you actually want.
+**Teaching moment.** The bare upstream rootfs sibling has **~127 packages**
+(verified 2026-05-04 on `openwrt/rootfs:x86-64-23.05.3`). The Mango on
+stock GL.iNet firmware has **~150 to 200**. Both are roughly the same
+order of magnitude. The contrast is not *count*, it is *what's installed*:
+the Mango adds GL.iNet's web UI, vendor services, and additional drivers
+on top of the upstream baseline. In Lab 02 you build a custom image that
+strips the GL.iNet additions and adds the engagement stack you want.
 
 > **Why not "~30 packages" like a minimal busybox image?** Because
-> `openwrt/rootfs:x86-64-23.05.3` is the *standard* OpenWrt rootfs — busybox,
-> opkg, dropbear, libuci, libubox, netifd, mtd, the procd init, default
-> kernel modules, and the upstream package management plumbing. A "minimal"
-> rootfs would mean rebuilding from `imagebuilder` with everything stripped;
-> that's a Lab 02 exercise, not a baseline.
+> `openwrt/rootfs:x86-64-23.05.3` is the *standard* OpenWrt rootfs:
+> busybox, opkg, dropbear, libuci, libubox, netifd, mtd, the procd init,
+> default kernel modules, and the upstream package management plumbing.
+> A "minimal" rootfs would mean rebuilding from `imagebuilder` with
+> everything stripped, and that is a Lab 02 exercise, not a baseline.
 
 When you're done with the sibling for the lab session:
 
@@ -577,46 +576,46 @@ Run the same commands in both and note the differences:
 uname -m
 # Mango: mips (or mipsel)   |  OpenWrt sibling: x86_64
 
-# Kernel — interesting difference (containers share the host kernel)
+# Kernel: interesting difference (containers share the host kernel)
 uname -r
 # Mango:   5.15.x          (OpenWrt 23.05.3's bundled kernel)
-# Sibling: 6.8.0-azure ... (the Codespace VM's host kernel — or your laptop's)
+# Sibling: 6.8.0-azure ... (the Codespace VM's host kernel, or your laptop's)
 #
-# This is correct behavior: the OpenWrt sibling is just a userland packaged in a
-# container, so it inherits whatever kernel the container engine is running on.
-# UCI/opkg/procd live in userland and don't care.
+# This is correct behavior. The OpenWrt sibling is just a userland packaged in
+# a container, so it inherits whatever kernel the container engine is running
+# on. UCI, opkg, and procd live in userland and don't care.
 
 # Storage layout
 df -h
 # Mango:   /rom is ~3.5MB squashfs (read-only) + / is ~10MB overlayfs (writable)
-# Sibling: / is the host's filesystem (effectively unbounded — TBs).
-#          /rom and /overlay exist as empty stubs — there's no squashfs
+# Sibling: / is the host's filesystem (effectively unbounded, TBs).
+#          /rom and /overlay exist as empty stubs; there is no squashfs
 #          beneath, so the failsafe-style overlay dance is a no-op here.
 
 # OpenWrt version
 cat /etc/openwrt_release | grep DISTRIB_RELEASE
 # Both should land on 23.05.x by Lab 02 (this Lab 01 unit may still be 23.05.0
-# pending Lab 02 sysupgrade — that's expected).
+# pending Lab 02 sysupgrade; that's expected).
 
 # UCI config system
 uci show network
 # Both have identical UCI syntax and semantics
 ```
 
-The key observation for later labs: **UCI, opkg, /etc/init.d, procd —
-identical**. A uci-defaults enrollment script written for the Mango runs
+The key observation for later labs: **UCI, opkg, `/etc/init.d`, and procd
+are identical**. A uci-defaults enrollment script written for the Mango runs
 unmodified in the OpenWrt sibling. The container/embedded contrast is
 architectural, not operational.
 
 > The Debian operator console *outside* the sibling runs a different shell
 > (bash on glibc), but the labs that need OpenWrt semantics (UCI, opkg)
-> always target the sibling or the real Mango. Day-2 cloud labs (tailscale
+> always target the sibling or the real Mango. Day-2 cloud labs (Tailscale
 > setup, wrangler deploys, cloudflared tunnels) run in the operator console
-> directly — no sibling needed.
+> directly; no sibling needed.
 
 </LabStep>
 
-<LabStep lab="lab01" id="failsafe" num={6} title="Recovery method 1 — OpenWrt failsafe via serial">
+<LabStep lab="lab01" id="failsafe" num={6} title="Recovery method 1: OpenWrt failsafe via serial">
 
 <EnvBlock env="codespace">
 
@@ -629,25 +628,25 @@ architectural, not operational.
 <EnvBlock env="local-dev,minimal-local">
 
 > **Bench-only:** this step requires the laptop's serial UART connection from
-> Step 3. The serial console is host-local hardware — neither the Dev Container
+> Step 3. The serial console is host-local hardware. Neither the Dev Container
 > nor docker can pass through `/dev/ttyUSB*`, so run this from your laptop's
 > shell directly.
 
 </EnvBlock>
 
 [Failsafe mode][failsafe-wiki] bypasses all custom OpenWrt configuration and
-drops the device into a minimal shell. Use it when a bad config locks you out of
-the OS — wrong LAN IP, lost root password, broken `/etc/init.d/network`. The OS
-still boots; it's the running configuration that's wrong.
+drops the device into a minimal shell. Use it when a bad config locks you out
+of the OS: wrong LAN IP, lost root password, broken `/etc/init.d/network`.
+The OS still boots; it's the running configuration that's wrong.
 
 [failsafe-wiki]: https://openwrt.org/docs/guide-user/troubleshooting/failsafe_and_factory_reset
 
-> **Important:** failsafe is entered over **the serial console** (UART) you attached
-> in Step 3, NOT by holding the reset button. The reset-at-boot mechanism does
-> something completely different on this hardware (Step 7 — HTTP recovery in
-> `u-boot_mod`).
+> **Important.** Failsafe is entered over **the serial console** (UART) you
+> attached in Step 3, not by holding the reset button. The reset-at-boot
+> mechanism does something else on this hardware: see Step 7 (HTTP recovery
+> via `u-boot_mod`).
 
-**Trigger a recoverable problem first (deliberate misconfig exercise):**
+**Trigger a recoverable problem first** (deliberate misconfig exercise):
 
 ```sh
 # In your Step 2 SSH session into the Mango:
@@ -655,7 +654,7 @@ still boots; it's the running configuration that's wrong.
 uci set network.lan.ipaddr='10.99.99.1'
 uci commit network
 /etc/init.d/network restart
-# SSH drops — expected. Network access to the Mango is now dead.
+# SSH drops, as expected. Network access to the Mango is now dead.
 ```
 
 > **Without serial attached, this is a brick.** This exercise depends on the Step 3
@@ -674,8 +673,9 @@ uci commit network
    wall-clock time after power is applied.
 3. Within ~2.5 seconds (before `mount_root: switching to jffs2 overlay` prints), type
    `f` followed by Enter in your serial terminal.
-4. The boot diverges: instead of the OpenWrt banner you land at a `root@(none):/#`
-   prompt. The `(none)` hostname is the tell — you are in failsafe.
+4. The boot diverges. Instead of the OpenWrt banner you land at a
+   `root@(none):/#` prompt. The `(none)` hostname is the tell: you are in
+   failsafe.
 
 **Repair the configuration:**
 
@@ -699,13 +699,14 @@ ping -c 3 192.168.1.1
 ssh root@192.168.1.1
 ```
 
-**Why this works:** OpenWrt's procd reads keystrokes from the kernel console (which
-is the UART) for ~2.5s after `procd: - early -`. Pressing `f` flips procd into a
-failsafe init path that mounts only the read-only squashfs and skips
-`/etc/init.d/*`, `/etc/uci-defaults/*`, and the overlay. Failsafe typically also
-configures eth0 with `192.168.1.1/24` and starts a telnet listener — that's why some
-guides describe a network-only failsafe path. With serial in hand the network access
-isn't required, and we don't exercise it here.
+**Why this works.** OpenWrt's procd reads keystrokes from the kernel console
+(which is the UART) for about 2.5 seconds after `procd: - early -`. Pressing
+`f` flips procd into a failsafe init path that mounts only the read-only
+squashfs and skips `/etc/init.d/*`, `/etc/uci-defaults/*`, and the overlay.
+Failsafe also configures eth0 with `192.168.1.1/24` and starts a telnet
+listener, which is why some guides describe a network-only failsafe path.
+With serial in hand, network access isn't required, and we don't exercise
+it here.
 
 {/* The network failsafe (telnet to 192.168.1.1) is documented in upstream OpenWrt
      but was not exercised during the 2026-05-03 walkthrough. Serial entry was
@@ -714,13 +715,13 @@ isn't required, and we don't exercise it here.
 
 </LabStep>
 
-<LabStep lab="lab01" id="recovery" num={7} title="Recovery method 2 — U-Boot HTTP recovery (u-boot_mod)">
+<LabStep lab="lab01" id="recovery" num={7} title="Recovery method 2: U-Boot HTTP recovery (u-boot_mod)">
 
 <EnvBlock env="codespace">
 
 > **Bench-only:** this step assigns a static IP on your laptop's Ethernet
-> interface to talk to the Mango at `192.168.1.1`. The Codespace can't reach
-> the Mango's local LAN — run this entirely from your laptop terminal.
+> interface to talk to the Mango at `192.168.1.1`. The Codespace cannot reach
+> the Mango's local LAN. Run this entirely from your laptop terminal.
 
 </EnvBlock>
 
@@ -728,24 +729,27 @@ isn't required, and we don't exercise it here.
 
 > **Bench-only:** this step assigns a static IP on your laptop's Ethernet
 > interface to talk to the Mango at `192.168.1.1`. Configure the laptop NIC
-> from the host shell (not from inside Docker / the Dev Container).
+> from the host shell, not from inside Docker or the Dev Container.
 
 </EnvBlock>
 
-When the OS is so broken it won't boot at all — for example after a failed sysupgrade
-or a corrupted kernel — failsafe is unreachable because no kernel is running. The next
-recovery layer lives in the bootloader. The Mango ships with **[`u-boot_mod`][ubm]**, a
-community-maintained U-Boot fork for Ralink/MediaTek SoCs that embeds an **HTTP
-recovery server** with a browser upload form.
+When the OS is broken to the point that it will not boot, failsafe is
+unreachable because no kernel is running. (Common causes: a failed
+sysupgrade, a corrupted kernel, or a partition table written incorrectly.)
+The next recovery layer lives in the bootloader. The Mango ships with
+**[`u-boot_mod`][ubm]**, a community-maintained U-Boot fork for Ralink and
+MediaTek SoCs that embeds an **HTTP recovery server** with a browser upload
+form.
 
 [ubm]: https://github.com/pepe2k/u-boot_mod
 
-> **This is `u-boot_mod`, not vendor stock U-Boot.** GL.iNet ships `u-boot_mod` on
-> most of their MT7628-class devices: Mango (MT300N-V2), Slate (AR300M), Creta
-> (AR750), AR150, USB150, etc. The recovery form HTML literally credits
-> `https://github.com/pepe2k/u-boot_mod`. Mainline OpenWrt's bootloader recovery on
-> devices without `u-boot_mod` is typically **TFTP** (UDP/69), not HTTP. Verified
-> 2026-05-03 on a GL-MT300N-V2 running pure OpenWrt 23.05.
+> **This is `u-boot_mod`, not vendor stock U-Boot.** GL.iNet ships
+> `u-boot_mod` on most of their MT7628-class devices: Mango (MT300N-V2),
+> Slate (AR300M), Creta (AR750), AR150, USB150, and others. The recovery
+> form HTML credits `https://github.com/pepe2k/u-boot_mod`. Mainline
+> OpenWrt's bootloader recovery on devices without `u-boot_mod` is
+> typically **TFTP** (UDP/69), not HTTP. Verified 2026-05-03 on a
+> GL-MT300N-V2 running pure OpenWrt 23.05.
 
 **Trigger U-Boot HTTP recovery:**
 
@@ -753,7 +757,7 @@ recovery server** with a browser upload form.
 2. Set your laptop's Ethernet interface to a static `192.168.1.2/24` (the U-Boot HTTP
    server lives at `192.168.1.1`):
    ```sh
-   # NetworkManager users — release management before assigning manually
+   # NetworkManager users: release management before assigning manually
    sudo nmcli device disconnect enp2s0      # substitute your interface
 
    # Linux
@@ -800,16 +804,16 @@ The form metadata (verified):
 
 - Action: POST to `/`
 - Field name: `firmware`
-- Server-side validation: **none** — `u-boot_mod` writes whatever bytes you POST into
-  the firmware partition. Choose your image carefully.
+- Server-side validation: **none**. `u-boot_mod` writes whatever bytes you
+  POST into the firmware partition, so choose your image carefully.
 - Browser-free upload (useful in Lab 12 for scripted flashing):
   ```sh
   curl -F 'firmware=@openwrt-23.05.3-ramips-mt76x8-glinet_gl-mt300n-v2-squashfs-sysupgrade.bin' http://192.168.1.1/
   ```
 
-**Do not upload anything in this lab.** We are verifying mode entry only — flashing is
-covered in Lab 03 (sysupgrade from a running OS) and Lab 12 (sealed image bake +
-unattended provisioning).
+**Do not upload anything in this lab.** You are verifying mode entry only.
+Flashing is covered in Lab 03 (sysupgrade from a running OS) and Lab 12
+(sealed image bake plus unattended provisioning).
 
 **Exit recovery:** power-cycle the Mango (no button held). It will autoboot to OpenWrt
 normally. After it boots, restore NetworkManager control of the Ethernet interface:
@@ -830,7 +834,7 @@ ssh root@<span data-profile-ip>192.168.8.1</span>   # or 192.168.1.1 for pre-fla
 | Reset hold duration | U-Boot reports | Action |
 |---------------------|----------------|--------|
 | 0 s (no button) | `0 second(s)` | Normal autoboot |
-| ~3 s | `< 5 second(s)` | "RESET button wasn't pressed or not long enough" — normal autoboot |
+| ~3 s | `< 5 second(s)` | "RESET button wasn't pressed or not long enough"; normal autoboot |
 | ≥5 s | `≥5 second(s)` | HTTP recovery server starts at `192.168.1.1` |
 
 <ResetButtonHoldVisualizer client:load />
@@ -841,7 +845,7 @@ prompt where you can run `printenv`, `tftpboot`, `bootm`, etc. The 2-second wind
 human-tight; spam-typing `gl<Enter>` repeatedly while the device boots improves
 reliability. Worth knowing exists; not the canonical recovery path.
 
-#### GL.iNet HTTP vs mainline TFTP — for general knowledge
+#### GL.iNet HTTP vs mainline TFTP (for general knowledge)
 
 | Aspect | Mainline OpenWrt U-Boot (e.g. some Belkin, RPi) | `u-boot_mod` (Mango and most GL.iNet MT7628-class devices) |
 |--------|---|---|
@@ -851,9 +855,9 @@ reliability. Worth knowing exists; not the canonical recovery path.
 | Default device IP | Varies | `192.168.1.1` |
 | Upload mechanism | TFTP `get` from device side | HTTP POST from host |
 
-If you encounter a non-GL.iNet OpenWrt device in the field, consult the OpenWrt wiki
-page for that specific model — recovery semantics are determined by the vendor U-Boot,
-not by OpenWrt itself.
+If you encounter a non-GL.iNet OpenWrt device in the field, consult the
+OpenWrt wiki page for that specific model. Recovery semantics are
+determined by the vendor U-Boot, not by OpenWrt itself.
 
 </LabStep>
 
@@ -863,8 +867,9 @@ When this lab is complete you should be able to answer yes to all of the followi
 
 - [ ] `ssh root@<span data-profile-ip>192.168.8.1</span>` connects and shows the Mango shell prompt.
       {/* 192.168.1.1 for pre-flashed pure-OpenWrt units; see Step 2 note. */}
-- [ ] `cat /etc/openwrt_release` on the Mango shows `DISTRIB_ID="OpenWrt"` (or
-      `'OpenWrt'` on 23.05+ units — single quotes; both accepted by validate.sh).
+- [ ] `cat /etc/openwrt_release` on the Mango shows `DISTRIB_ID="OpenWrt"`
+      (or `'OpenWrt'` on 23.05+ units, with single quotes; both accepted by
+      validate.sh).
 - [ ] `docker exec ep-devcontainer cat /etc/openwrt_release` shows the same `DISTRIB_ID`.
 - [ ] You attached the serial console (Step 3) and observed U-Boot, kernel, and
       OpenWrt login output.
@@ -878,31 +883,29 @@ When this lab is complete you should be able to answer yes to all of the followi
 
 ## Validation
 
-Three validation paths — pick whichever matches your setup. All three call
+Three validation paths. Pick whichever matches your setup. All three call
 the same `validate.sh` and post the result to the same backend; only the
 delivery channel differs.
 
-**Path 1 — `epl` CLI (recommended in operator console):**
+**Path 1: `epl` CLI** (recommended from the operator console).
 
 The `epl-cli` tool is symlinked to `epl` on PATH by `post-create.sh`. After
 running `epl login` once (paste a token from
-[`/profile`](https://course.eplabs.cloud/profile)), each lab is a single command:
+[`/profile`](https://course.eplabs.cloud/profile)), each lab is one command:
 
 ```sh
 epl validate lab01-hardware-familiarization
 ```
 
 Output streams to your terminal; pass/fail and a "Mark complete" event are
-posted automatically. Re-run as many times as you like — only the most
-recent result is recorded. From inside the **operator console** is the
-expected place; the validation script SSHes to the Mango (laptop must be
-reachable from the operator console — works in local Dev Containers and,
-after Lab 05, in Codespaces over the tailnet).
+posted automatically. Re-run as many times as you like; only the most
+recent result is recorded. The validation script SSHes to the Mango, so the
+laptop must be reachable from the operator console. This works in local
+Dev Containers, and in Codespaces from Lab 05 onward over the tailnet.
 
-**Path 2 — direct script (bench laptop):**
+**Path 2: direct script** (bench laptop).
 
-If you're working on your laptop only and haven't moved the operator console
-to the Mango yet, run the script directly from your laptop:
+If you're working on your laptop only, run the script directly:
 
 ```sh
 bash courses/engagement-platform-labs/labs/lab01-hardware-familiarization/validate.sh
@@ -915,22 +918,24 @@ cd courses/engagement-platform-labs/labs
 make validate-lab01-hardware-familiarization
 ```
 
-The script exits `0` on success and prints the first failing assertion on failure.
+The script exits `0` on success and prints the first failing assertion on
+failure.
 
-**Path 3 — paste output into the widget:**
+**Path 3: paste output into the widget.**
 
-Run `validate.sh` anywhere, copy the full output, paste into the widget
-below. Equivalent to Path 1 but manual; useful when neither the laptop nor
-the operator console can reach the site directly.
+Run `validate.sh` anywhere, copy the full output, and paste it into the
+widget below. Equivalent to Path 1 but manual; useful when neither the
+laptop nor the operator console can reach the site directly.
 
 **What the script checks:**
 
-1. SSH into the Mango at `$MANGO_HOST` succeeds and `/etc/openwrt_release` contains
-   `DISTRIB_ID="OpenWrt"` or `DISTRIB_ID='OpenWrt'` (either quote style is accepted).
-2. `docker exec ep-devcontainer cat /etc/openwrt_release` succeeds and contains the
-   same `DISTRIB_ID`.
+1. SSH into the Mango at `$MANGO_HOST` succeeds and `/etc/openwrt_release`
+   contains `DISTRIB_ID="OpenWrt"` or `DISTRIB_ID='OpenWrt'` (either quote
+   style is accepted).
+2. `docker exec ep-devcontainer cat /etc/openwrt_release` succeeds and
+   contains the same `DISTRIB_ID`.
 
-**Pre-flashed pure-OpenWrt Mangos:** override the IP per the Step 2 note —
+**Pre-flashed pure-OpenWrt Mangos.** Override the IP per the Step 2 note:
 `MANGO_HOST=192.168.1.1 ./validate.sh` (or
 `MANGO_HOST=192.168.1.1 epl validate lab01-hardware-familiarization`).
 
@@ -946,57 +951,59 @@ See [`take-home/README.md`](take-home/README.md) for a pointer to the MT3000 tou
 
 ## Further reading
 
-Lab 01's surface area is broad on purpose — recovery, hardware, two operating
+Lab 01's surface is broad on purpose: recovery, hardware, and two operating
 environments. The links below let you go deeper on whichever piece interested
 you most.
 
 **OpenWrt fundamentals** (skim these before Lab 02):
 
-- [OpenWrt Quick Start Guide](https://openwrt.org/docs/guide-quick-start/start) —
-  the official 10-minute tour of OpenWrt concepts.
-- [The UCI configuration system](https://openwrt.org/docs/guide-user/base-system/uci) —
-  every Mango-side lab from Lab 03 forward edits UCI. Read at minimum the
+- [OpenWrt Quick Start Guide](https://openwrt.org/docs/guide-quick-start/start).
+  The official 10-minute tour of OpenWrt concepts.
+- [The UCI configuration system](https://openwrt.org/docs/guide-user/base-system/uci).
+  Every Mango-side lab from Lab 03 forward edits UCI. Read at minimum the
   "Command-line utility" section.
-- [opkg — package management](https://openwrt.org/docs/guide-user/additional-software/opkg) —
-  install/remove/upgrade. Lab 02 builds custom firmware; opkg is what populates it.
-- [procd — process and service manager](https://openwrt.org/docs/techref/procd) —
-  init, hotplug, and the failsafe entry point you used in Step 6.
-- [Failsafe and factory reset](https://openwrt.org/docs/guide-user/troubleshooting/failsafe_and_factory_reset) —
-  upstream's full failsafe doc, including the network-failsafe (telnet) path
-  this lab does not exercise.
+- [opkg package management](https://openwrt.org/docs/guide-user/additional-software/opkg).
+  Install, remove, upgrade. Lab 02 builds custom firmware, and opkg is what
+  populates it.
+- [procd process and service manager](https://openwrt.org/docs/techref/procd).
+  Init, hotplug, and the failsafe entry point you used in Step 6.
+- [Failsafe and factory reset](https://openwrt.org/docs/guide-user/troubleshooting/failsafe_and_factory_reset).
+  Upstream's full failsafe doc, including the network-failsafe (telnet)
+  path this lab does not exercise.
 
 **Hardware-specific:**
 
-- [GL-MT300N-V2 (Mango) device page](https://openwrt.org/toh/gl.inet/gl-mt300n_v2) —
-  OpenWrt's hardware compatibility entry: SoC, flash layout, supported releases,
-  known issues.
-- [Serial console pinout discovery](https://openwrt.org/docs/techref/hardware/port.serial) —
-  how to find UART pads on an unfamiliar board safely.
-- [`u-boot_mod` (pepe2k fork)](https://github.com/pepe2k/u-boot_mod) — bootloader
-  used by GL.iNet MT7628-class devices; HTTP recovery server source, command
-  reference, and build instructions for porting to other devices.
-- [MediaTek MT7628 datasheet (community mirror)](https://wikidevi.wi-cat.ru/MediaTek_MT7628) —
-  for those curious about the SoC behind the Mango.
+- [GL-MT300N-V2 (Mango) device page](https://openwrt.org/toh/gl.inet/gl-mt300n_v2).
+  OpenWrt's hardware compatibility entry: SoC, flash layout, supported
+  releases, known issues.
+- [Serial console pinout discovery](https://openwrt.org/docs/techref/hardware/port.serial).
+  How to find UART pads on an unfamiliar board safely.
+- [`u-boot_mod` (pepe2k fork)](https://github.com/pepe2k/u-boot_mod). The
+  bootloader used by GL.iNet MT7628-class devices: HTTP recovery server
+  source, command reference, and build instructions for porting to other
+  devices.
+- [MediaTek MT7628 datasheet (community mirror)](https://wikidevi.wi-cat.ru/MediaTek_MT7628).
+  For those curious about the SoC behind the Mango.
 
 **Containers and the operator console:**
 
-- [Dev Containers specification](https://containers.dev/) — the open spec
-  `devcontainer.json` follows. Once you understand it, every lab in this course
-  becomes a portable artifact across editors and runtimes.
-- [GitHub Codespaces overview](https://docs.github.com/en/codespaces/overview) —
-  lifecycle, billing, prebuilds, secrets management.
-- [Tailscale userspace networking](https://tailscale.com/kb/1112/userspace-networking) —
-  the mode the Codespace path uses, and why Lab 05 will set
+- [Dev Containers specification](https://containers.dev/). The open spec
+  `devcontainer.json` follows. Once you understand it, every lab in this
+  course is portable across editors and runtimes.
+- [GitHub Codespaces overview](https://docs.github.com/en/codespaces/overview).
+  Lifecycle, billing, prebuilds, secrets management.
+- [Tailscale userspace networking](https://tailscale.com/kb/1112/userspace-networking).
+  The mode the Codespace path uses, and why Lab 05 sets
   `--tun=userspace-networking` automatically when `$CODESPACES` is set.
 
 **Workshop-internal:**
 
-- [Lab 02 — ImageBuilder Firmware](../lab02-imagebuilder-firmware/) — what comes
-  next; you'll bake your own Mango image off the same `ramips/mt76x8` baseline
-  you saw in Step 2.
-- [`AUTHORING.md`](https://github.com/errantpacket/OpenWRT_Course/blob/main/courses/engagement-platform-labs/AUTHORING.md) —
-  for instructors and contributors: how lab content, the site, the worker, and
-  the student-starter sync fit together.
+- [Lab 02: ImageBuilder Firmware](../lab02-imagebuilder-firmware/). What
+  comes next. You bake your own Mango image off the same `ramips/mt76x8`
+  baseline you saw in Step 2.
+- [`AUTHORING.md`](https://github.com/errantpacket/OpenWRT_Course/blob/main/courses/engagement-platform-labs/AUTHORING.md).
+  For instructors and contributors. Documents how lab content, the site,
+  the Worker, and the student-starter sync fit together.
 
 ---
 
@@ -1014,32 +1021,36 @@ you most.
 <summary>Cannot reach 192.168.8.1 (or 192.168.1.1 on pre-flashed units)</summary>
 
 - Confirm your Ethernet cable is in the **LAN** (black) port, not the WAN (orange) port.
-- Check that your laptop's Ethernet interface received a DHCP address in the matching
-  range — `192.168.8.0/24` for stock GL.iNet, `192.168.1.0/24` for pure OpenWrt.
-  Use `ip addr show` (Linux) or `ifconfig` (macOS).
-- If you got a DHCP address in the *other* range (e.g. you're on `192.168.1.x` but the
-  Mango is at `192.168.8.1`), the cable is likely in the WAN port — Ethernet traffic
-  is reaching your home/office router, not the Mango. Move it to LAN.
-- If your interface is static, set it to `192.168.8.2/24` (stock) or `192.168.1.2/24`
-  (pre-flashed) manually.
-- Check that the Mango LED is solid white (normal operation). If it is off or blinking
-  abnormally, power cycle the device.
-- Last resort — recover via Step 6 (failsafe over serial) or Step 7 (`u-boot_mod`
-  HTTP recovery via reset-button-hold ≥5s).
+- Check that your laptop's Ethernet interface received a DHCP address in
+  the matching range: `192.168.8.0/24` for stock GL.iNet, `192.168.1.0/24`
+  for pure OpenWrt. Use `ip addr show` (Linux) or `ifconfig` (macOS).
+- If you got a DHCP address in the *other* range (for example, you're on
+  `192.168.1.x` but the Mango is at `192.168.8.1`), the cable is likely in
+  the WAN port. Ethernet traffic is reaching your home or office router,
+  not the Mango. Move it to LAN.
+- If your interface is static, set it to `192.168.8.2/24` (stock) or
+  `192.168.1.2/24` (pre-flashed) manually.
+- Check that the Mango LED is solid white (normal operation). If it is off
+  or blinking abnormally, power-cycle the device.
+- Last resort: recover via Step 6 (failsafe over serial) or Step 7
+  (`u-boot_mod` HTTP recovery via a reset-button hold of 5 seconds or
+  longer).
 
 </details>
 
 <details>
 <summary>SSH connection refused on the Mango</summary>
 
-- Stock GL.iNet firmware enables SSH by default on LAN. If it was disabled, navigate to
-  the admin UI at `http://192.168.8.1`, go to **System → Advanced → SSH Access**, and
-  enable it.
-- The default root password on stock GL.iNet firmware is printed on the device label
-  (usually `goodlife`). If the password was changed, reset via failsafe mode (Step 6).
-- Pure-OpenWrt units have **no** root password set on first SSH; if SSH refuses with
-  "Permission denied (publickey)", the unit's dropbear is configured key-only —
-  enter via serial and either run `passwd` or install your pubkey per the Step 2 note.
+- Stock GL.iNet firmware enables SSH by default on LAN. If it was
+  disabled, open the admin UI at `http://192.168.8.1`, go to
+  **System > Advanced > SSH Access**, and enable it.
+- The default root password on stock GL.iNet firmware is printed on the
+  device label (usually `goodlife`). If the password was changed, reset
+  via failsafe mode (Step 6).
+- Pure-OpenWrt units have **no** root password set on first SSH. If SSH
+  refuses with "Permission denied (publickey)", the unit's dropbear is
+  configured key-only. Enter via serial and either run `passwd` or
+  install your pubkey per the Step 2 note.
 
 </details>
 
@@ -1058,17 +1069,21 @@ you most.
 </details>
 
 <details>
-<summary>Failsafe mode not triggering (serial entry — Step 6)</summary>
+<summary>Failsafe mode not triggering (serial entry, Step 6)</summary>
 
-- Failsafe is entered over **serial**, not by holding the reset button. The reset
-  button at power-on triggers `u-boot_mod` HTTP recovery (Step 7), which is a
-  different recovery layer.
-- Watch your serial terminal for the line `Press the [f] key and hit [enter] to enter
-  failsafe mode`. It appears at kernel `t≈6.5s` (~10s of wall-clock from power-on).
-- The window before procd commits the boot is ~2.5 seconds. If you miss it, the
-  OpenWrt login prompt prints normally — power-cycle and try again.
-- The failsafe shell prompt is `root@(none):/#`. The `(none)` hostname is the tell.
-- Run `mount_root` once inside failsafe to gain access to `/etc/config/*` for repair.
+- Failsafe is entered over **serial**, not by holding the reset button.
+  The reset button at power-on triggers `u-boot_mod` HTTP recovery (Step
+  7), which is a different recovery layer.
+- Watch your serial terminal for the line `Press the [f] key and hit
+  [enter] to enter failsafe mode`. It appears at kernel `t≈6.5s`,
+  roughly 10 seconds of wall-clock time after power-on.
+- The window before procd commits the boot is about 2.5 seconds. If you
+  miss it, the OpenWrt login prompt prints normally; power-cycle and try
+  again.
+- The failsafe shell prompt is `root@(none):/#`. The `(none)` hostname is
+  the tell.
+- Run `mount_root` once inside failsafe to gain access to
+  `/etc/config/*` for repair.
 
 </details>
 
@@ -1077,29 +1092,32 @@ you most.
 
 - Hold the reset button **before** applying power, and keep holding for at least
   5 seconds after the LED comes on.
-- Confirm via serial: U-Boot prints `RESET button is pressed for: N second(s)`. If
-  N is `< 5` you didn't hold long enough; if N is `0` the button isn't being
-  registered (cable in wrong port, button stuck, etc.).
-- Once `HTTP server is starting at IP: 192.168.1.1` prints, set your laptop static
-  IP to `192.168.1.2/24` (NetworkManager users: `sudo nmcli device disconnect
-  enp2s0` first to keep it from clobbering the static address with DHCP retries).
-- Browse to `http://192.168.1.1/` — you should see the firmware-update form.
+- Confirm via serial: U-Boot prints `RESET button is pressed for: N
+  second(s)`. If N is `< 5` you didn't hold long enough; if N is `0` the
+  button isn't being registered (cable in the wrong port, button stuck,
+  or similar).
+- Once `HTTP server is starting at IP: 192.168.1.1` prints, set your
+  laptop's static IP to `192.168.1.2/24` (NetworkManager users:
+  `sudo nmcli device disconnect enp2s0` first, to keep it from clobbering
+  the static address with DHCP retries).
+- Browse to `http://192.168.1.1/`. You should see the firmware-update form.
 
 </details>
 
 <details>
 <summary>docker exec ep-devcontainer: container not found</summary>
 
-- The OpenWrt sibling must be running. From inside the operator console, verify with
-  `docker ps | grep ep-devcontainer`.
-- If you launched the sibling in foreground (`-it`) mode, the container exited
-  when you exited the shell. **Re-run the Step 4b command using `-d` (detached)
-  mode as documented**, then `openwrt-shell` (or `docker exec -it ep-devcontainer
-  /bin/sh`) for subsequent shells.
-- The sibling must be named `ep-devcontainer` for `validate.sh` to find it.
-- If `docker` itself isn't found inside the operator console, the docker-in-docker
-  feature didn't install — check `.devcontainer/post-create.log` and rebuild the
-  devcontainer.
+- The OpenWrt sibling must be running. From inside the operator console,
+  verify with `docker ps | grep ep-devcontainer`.
+- If you launched the sibling in foreground (`-it`) mode, the container
+  exited when you exited the shell. **Re-run the Step 4b command using
+  `-d` (detached) mode as documented**, then `openwrt-shell` (or
+  `docker exec -it ep-devcontainer /bin/sh`) for subsequent shells.
+- The sibling must be named `ep-devcontainer` for `validate.sh` to find
+  it.
+- If `docker` itself is not found inside the operator console, the
+  docker-in-docker feature did not install. Check
+  `.devcontainer/post-create.log` and rebuild the Dev Container.
 
 </details>
 
