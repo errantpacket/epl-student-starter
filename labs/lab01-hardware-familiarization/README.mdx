@@ -5,12 +5,13 @@ duration: "60 minutes"
 day: "Day 1, Session 1"
 hardwareRequired: true
 codespaces: "partial"
-widgets: ["HardwareProfileToggle", "EnvironmentToggle", "LabProgress", "EnvBlock", "ResetButtonHoldVisualizer", "ValidateOutputPaster", "MarkCompleteButton", "ViewSource"]
+widgets: ["HardwareProfileToggle", "EnvironmentToggle", "LabProgress", "LabStep", "EnvBlock", "ResetButtonHoldVisualizer", "ValidateOutputPaster", "MarkCompleteButton", "ViewSource"]
 ---
 
 import HardwareProfileToggle from '@widgets/HardwareProfileToggle.svelte';
 import EnvironmentToggle from '@widgets/EnvironmentToggle.svelte';
 import LabProgress from '@widgets/LabProgress.svelte';
+import LabStep from '@widgets/LabStep.astro';
 import EnvBlock from '@widgets/EnvBlock.astro';
 import ResetButtonHoldVisualizer from '@widgets/ResetButtonHoldVisualizer.svelte';
 import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
@@ -219,7 +220,7 @@ chmod +x courses/engagement-platform-labs/labs/lab01-hardware-familiarization/va
 
 ## Walkthrough
 
-### 1. Physical Mango inspection
+<LabStep lab="lab01" id="inspect" num={1} title="Physical Mango inspection">
 
 Power on the Mango and examine it while it boots.
 
@@ -251,9 +252,9 @@ This is intentional for the drop-device role it plays from Lab 03 onward.
 **GPIO testpoints (used for serial in Step 3):** TP1–TP4 on the PCB near the SoC.
 We'll connect to these in Step 3 — locate them visually now.
 
----
+</LabStep>
 
-### 2. Boot stock Mango firmware and verify SSH
+<LabStep lab="lab01" id="ssh" num={2} title="Boot stock Mango firmware and verify SSH">
 
 Connect your laptop's Ethernet port to the **LAN (black)** port on the Mango.
 Set your laptop's Ethernet interface to DHCP (or static `192.168.8.2/24`).
@@ -344,9 +345,9 @@ real Mango drop image (ramips/mt76x8) come off the same baseline.
 [uci-wiki]: https://openwrt.org/docs/guide-user/base-system/uci
 [opkg-wiki]: https://openwrt.org/docs/guide-user/additional-software/opkg
 
----
+</LabStep>
 
-### 3. Attach the serial console
+<LabStep lab="lab01" id="serial" num={3} title="Attach the serial console">
 
 Serial gives you direct UART access to U-Boot and the kernel — earlier than any
 network or OpenWrt init. We attach it now because **Step 6 (failsafe) and Step 7
@@ -424,9 +425,9 @@ login prompt to confirm bidirectional input works.
 
 [serial-wiki]: https://openwrt.org/docs/techref/hardware/port.serial
 
----
+</LabStep>
 
-### 4. The devcontainer as soft hardware
+<LabStep lab="lab01" id="devcontainer" num={4} title="The devcontainer as soft hardware">
 
 The engagement-platform devcontainer is **two-tier**:
 
@@ -553,9 +554,9 @@ When you're done with the sibling for the lab session:
 docker stop ep-devcontainer
 ```
 
----
+</LabStep>
 
-### 5. Compare the two environments side by side
+<LabStep lab="lab01" id="compare" num={5} title="Compare the two environments side by side">
 
 Use the SSH session you opened in Step 2, plus a new shell into the OpenWrt
 sibling launched in Step 4b:
@@ -613,9 +614,9 @@ architectural, not operational.
 > setup, wrangler deploys, cloudflared tunnels) run in the operator console
 > directly — no sibling needed.
 
----
+</LabStep>
 
-### 6. Recovery method 1 — OpenWrt failsafe via serial
+<LabStep lab="lab01" id="failsafe" num={6} title="Recovery method 1 — OpenWrt failsafe via serial">
 
 <EnvBlock env="codespace">
 
@@ -711,9 +712,9 @@ isn't required, and we don't exercise it here.
      verified end-to-end. If the network failsafe path needs to be a teaching point,
      instructor should verify on the workshop's exact firmware. */}
 
----
+</LabStep>
 
-### 7. Recovery method 2 — U-Boot HTTP recovery (`u-boot_mod`)
+<LabStep lab="lab01" id="recovery" num={7} title="Recovery method 2 — U-Boot HTTP recovery (u-boot_mod)">
 
 <EnvBlock env="codespace">
 
@@ -854,7 +855,7 @@ If you encounter a non-GL.iNet OpenWrt device in the field, consult the OpenWrt 
 page for that specific model — recovery semantics are determined by the vendor U-Boot,
 not by OpenWrt itself.
 
----
+</LabStep>
 
 ## Post-state
 
