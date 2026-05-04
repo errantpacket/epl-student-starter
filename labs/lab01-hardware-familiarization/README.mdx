@@ -20,11 +20,13 @@ import ViewSource from '@widgets/ViewSource.svelte';
 
 **Duration: 60 minutes**
 
-You have two pieces of hardware in front of you: a GL.iNet Mango (GL-MT300N-V2) running
-OpenWrt on a 16MB NOR flash chip, and a VS Code devcontainer running the same OpenWrt
-23.05.3 userland on your laptop. By the end of this lab you will have SSH'd into both,
-attached a serial console to the Mango, and exercised both software-level (failsafe)
-and bootloader-level (`u-boot_mod` HTTP) recovery paths.
+You have a GL.iNet Mango (GL-MT300N-V2) running OpenWrt on a 16MB NOR flash chip in
+front of you, and a VS Code devcontainer (or Codespace) hosting the engagement
+platform — a Debian operator console with an OpenWrt 23.05.3 rootfs available as a
+sibling container. By the end of this lab you will have SSH'd into the Mango,
+exec'd into the OpenWrt sibling, attached a serial console to the Mango, and
+exercised both software-level (failsafe) and bootloader-level (`u-boot_mod` HTTP)
+recovery paths.
 
 The core lesson: **you can break OpenWrt and recover it**. Failsafe mode, U-Boot HTTP
 recovery (`u-boot_mod`), and serial console are not emergency last resorts — they are
@@ -40,8 +42,8 @@ normal tools. Practice them before you need them.
 
 - Navigate the Mango hardware: ports, reset button, testpoints, USB.
 - Attach the serial console to the Mango (TP1–TP4) and observe boot.
-- SSH into both platforms (Mango and devcontainer) and recognize that OpenWrt is
-  OpenWrt regardless of the container/embedded boundary.
+- SSH into the Mango, exec into an OpenWrt rootfs sibling container, and recognize
+  that OpenWrt is OpenWrt regardless of the container/embedded boundary.
   {/* Stock GL.iNet firmware (factory default) uses 192.168.8.1 / goodlife.
        Pre-flashed pure OpenWrt uses 192.168.1.1 with empty root password.
        Both paths are documented in Step 2; this is the authoritative source. */}
@@ -65,9 +67,9 @@ docker info | grep -E '^Server Version'
 command -v screen || command -v picocom || command -v minicom || command -v tio || \
     echo "Install one: sudo apt install screen  (or picocom / tio)"
 
-# The EPL devcontainer image is available, OR Lab 02 hasn't run yet — fallback
-# to the upstream rootfs in Step 4b is fine.
-docker images | grep -E 'epl-engagement-platform|openwrt/rootfs'
+# The OpenWrt rootfs sibling image is local. post-create.sh pre-pulls it on
+# devcontainer build; if it's missing, Step 4b will pull on demand.
+docker images | grep openwrt/rootfs
 ```
 
 **Hardware on the bench (per student):**
@@ -208,8 +210,9 @@ opkg list-installed | wc -l
 ```
 
 **Key observation:** note the `DISTRIB_TARGET` field. It will say `ramips/mt76x8`.
-That same target string is the foundation for both the Mango drop firmware
-(NOR-constrained) and the devcontainer engagement platform you'll build in Lab 02.
+That same target string drives the firmware images you'll build with ImageBuilder
+in Lab 02 — both the operator-platform image (x86/64 target, conceptual) and the
+real Mango drop image (ramips/mt76x8) come off the same baseline.
 
 ---
 
@@ -286,77 +289,107 @@ login prompt to confirm bidirectional input works.
 
 ### 4. The devcontainer as soft hardware
 
-The VS Code devcontainer runs the same OpenWrt 23.05.3 rootfs, just on x86-64 with no
-flash constraint. From the shell prompt, the two environments are indistinguishable
-except for target architecture and available storage.
+The engagement-platform devcontainer is **two-tier**:
 
-#### 4a. Open in VS Code (recommended path)
+- **Outer container — Debian operator console.** This is what VS Code (locally
+  *or* in a Codespace) attaches to. It hosts the engagement stack: tailscale,
+  cloudflared, wrangler, python, jq. It's Debian-based because vscode-server
+  is a glibc binary and OpenWrt's musl userland can't run it.
+- **Sibling container — OpenWrt rootfs.** Launched via docker-in-docker from
+  the outer console. This is the soft-hardware companion to the Mango — same
+  OpenWrt 23.05.3 userland, just on x86-64 with no flash constraint. Step 5's
+  comparison runs here.
+
+From a shell prompt, the OpenWrt sibling is indistinguishable from the Mango
+except for target architecture and available storage. UCI, opkg, /etc/init.d,
+procd — identical. **The OS is the OS.**
+
+#### 4a. Open in VS Code (or Codespaces)
+
+Local Dev Containers:
 
 1. Open VS Code in the course root:
    ```sh
    code /path/to/engagement-platform-labs
    ```
 2. VS Code detects `.devcontainer/devcontainer.json` and prompts:
-   **"Reopen in Container"** — click it.
-3. The container starts. Open a new terminal (`Ctrl+backtick`).
-4. You are now inside the OpenWrt rootfs:
+   **"Reopen in Container"** — click it. (Requires the *Dev Containers*
+   extension and a running Docker or Podman daemon.)
+3. The Debian operator console builds and starts. Open a new terminal
+   (`Ctrl+backtick`); you are at a Debian shell:
    ```sh
-   cat /etc/openwrt_release
-   # DISTRIB_ID='OpenWrt'      (single-quoted — upstream 23.05.3 format)
-   # DISTRIB_TARGET='x86/64'   (the devcontainer is x86/64; the Mango is ramips/mt76x8)
+   cat /etc/os-release | grep PRETTY_NAME
+   # PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+
+   tailscale version    # confirms the operator stack is here
+   wrangler --version
    ```
 
-The container name is `ep-devcontainer` (set by `--name` and matched by `--hostname` in
-`.devcontainer/devcontainer.json`). Subsequent labs refer to it by that name when
-running `docker exec` from your host.
+Codespaces (one-click, no local Docker required):
 
-#### 4b. Bare docker run (fallback — no VS Code required)
+> Click **Open in Codespaces** on the lab page header (or
+> [`codespaces.new/errantpacket/epl-student-starter`](https://codespaces.new/errantpacket/epl-student-starter)).
+> The same Dockerfile builds; vscode-server runs natively on Debian.
 
-If VS Code is not available or the devcontainer image hasn't been built yet, run the
-upstream OpenWrt rootfs directly **in detached mode**. This keeps the container
-running through Step 5 and validation, regardless of whether you have a shell into it:
+#### 4b. Launch the OpenWrt rootfs sibling
+
+From a terminal inside the operator console, spin up the OpenWrt sibling
+**in detached mode**. The image has been pre-pulled by `post-create.sh`, so
+this returns instantly:
 
 ```sh
 docker run -d --rm \
     --name ep-devcontainer \
     --hostname ep-devcontainer \
-    --cap-add=NET_ADMIN \
-    --device=/dev/net/tun \
     openwrt/rootfs:x86-64-23.05.3 \
     /bin/sh -c 'mkdir -p /var/lock /var/run /var/log; tail -f /dev/null'
 
-# Open a shell into it for the rest of the lab:
+# Open a shell into the sibling for the rest of the lab:
+openwrt-shell                          # convenience wrapper
+# or, equivalently:
 docker exec -it ep-devcontainer /bin/sh
 ```
 
-> **Why detached:** the foreground `-it` variant exits the container the moment you
-> exit the shell, which would break Step 5 and validation. Detached + `tail -f` keeps
-> PID 1 alive; you `docker exec` to enter and exit shells freely.
+> **Why detached:** a foreground `-it` variant exits the container the moment
+> you exit the shell, breaking Step 5 and validation. Detached + `tail -f`
+> keeps PID 1 alive; `docker exec` lets you enter and exit shells freely.
 
-Once inside:
+Once inside the OpenWrt sibling:
 
 ```sh
 cat /etc/openwrt_release
+# DISTRIB_ID='OpenWrt'      (single-quoted — upstream 23.05.3 format)
+# DISTRIB_TARGET='x86/64'   (the sibling is x86/64; the Mango is ramips/mt76x8)
+
 opkg update
 opkg list-installed | wc -l
 ```
 
-**Teaching moment:** compare the package counts between the Mango (stock GL.iNet
-firmware, hundreds of packages) and this bare rootfs (~30 packages). In Lab 02 you
-will build both to your exact specification from the same ImageBuilder baseline.
+**Teaching moment:** compare the package counts between the Mango (stock
+GL.iNet firmware, hundreds of packages) and this bare rootfs (~30 packages).
+In Lab 02 you will build both to your exact specification from the same
+ImageBuilder baseline.
+
+When you're done with the sibling for the lab session:
+
+```sh
+docker stop ep-devcontainer
+```
 
 ---
 
 ### 5. Compare the two environments side by side
 
-Use the SSH session you opened in Step 2, plus a new `docker exec` shell:
+Use the SSH session you opened in Step 2, plus a new shell into the OpenWrt
+sibling launched in Step 4b:
 
 ```sh
-# Terminal 1: Mango  (the SSH from Step 2)
+# Terminal 1: Mango (the SSH from Step 2)
 ssh root@<span data-profile-ip>192.168.8.1</span>
 
-# Terminal 2: devcontainer
-docker exec -it ep-devcontainer /bin/sh
+# Terminal 2: OpenWrt sibling (running inside the operator console via DinD)
+openwrt-shell
+# or: docker exec -it ep-devcontainer /bin/sh
 ```
 
 Run the same commands in both and note the differences:
@@ -364,12 +397,12 @@ Run the same commands in both and note the differences:
 ```sh
 # Architecture
 uname -m
-# Mango: mips (or mipsel)   |  devcontainer: x86_64
+# Mango: mips (or mipsel)   |  OpenWrt sibling: x86_64
 
 # Storage layout
 df -h
 # Mango: /rom is ~3.5MB squashfs (read-only) + / is ~10MB overlayfs (writable)
-# Devcontainer: / is the host's filesystem (effectively unbounded — TBs)
+# Sibling: / is the host's filesystem (effectively unbounded — TBs)
 
 # OpenWrt version
 cat /etc/openwrt_release | grep DISTRIB_RELEASE
@@ -381,9 +414,16 @@ uci show network
 # Both have identical UCI syntax and semantics
 ```
 
-The key observation for later labs: **UCI, opkg, /etc/init.d, procd — identical**. A
-uci-defaults enrollment script written for the Mango runs unmodified in the devcontainer.
-The container/embedded contrast is architectural, not operational.
+The key observation for later labs: **UCI, opkg, /etc/init.d, procd —
+identical**. A uci-defaults enrollment script written for the Mango runs
+unmodified in the OpenWrt sibling. The container/embedded contrast is
+architectural, not operational.
+
+> The Debian operator console *outside* the sibling runs a different shell
+> (bash on glibc), but the labs that need OpenWrt semantics (UCI, opkg)
+> always target the sibling or the real Mango. Day-2 cloud labs (tailscale
+> setup, wrangler deploys, cloudflared tunnels) run in the operator console
+> directly — no sibling needed.
 
 ---
 
@@ -739,12 +779,16 @@ See [`take-home/README.md`](take-home/README.md) for a pointer to the MT3000 tou
 <details>
 <summary>docker exec ep-devcontainer: container not found</summary>
 
-- The devcontainer must be running. If you used VS Code "Reopen in Container," it should
-  be running. Verify with: `docker ps | grep ep-devcontainer`
-- If you used the Step 4b fallback in foreground (`-it`) mode, the container exited
-  when you exited the shell. **Re-run the Step 4b command using `-d` (detached) mode
-  as documented**, then `docker exec -it ep-devcontainer /bin/sh` for shells.
-- The container must be named `ep-devcontainer` for `validate.sh` to find it.
+- The OpenWrt sibling must be running. From inside the operator console, verify with
+  `docker ps | grep ep-devcontainer`.
+- If you launched the sibling in foreground (`-it`) mode, the container exited
+  when you exited the shell. **Re-run the Step 4b command using `-d` (detached)
+  mode as documented**, then `openwrt-shell` (or `docker exec -it ep-devcontainer
+  /bin/sh`) for subsequent shells.
+- The sibling must be named `ep-devcontainer` for `validate.sh` to find it.
+- If `docker` itself isn't found inside the operator console, the docker-in-docker
+  feature didn't install — check `.devcontainer/post-create.log` and rebuild the
+  devcontainer.
 
 </details>
 

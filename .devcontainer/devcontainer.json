@@ -1,21 +1,22 @@
 {
-  "name": "EPL Engagement Platform (OpenWrt 23.05.3)",
+  "name": "EPL Engagement Platform (Debian operator console)",
   "build": {
     "dockerfile": "Dockerfile",
     "context": "."
   },
-  "runArgs": [
-    "--cap-add=NET_ADMIN",
-    "--cap-add=SYS_MODULE",
-    "--device=/dev/net/tun",
-    "--hostname=ep-devcontainer"
-  ],
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "moby": true,
+      "dockerDashComposeVersion": "v2"
+    }
+  },
   "mounts": [
     "source=epl-tailscale,target=/var/lib/tailscale,type=volume",
     "source=epl-cloudflared,target=/etc/cloudflared,type=volume"
   ],
   "remoteUser": "root",
-  "postCreateCommand": "${containerWorkspaceFolder}/.devcontainer/post-create.sh",
+  "postCreateCommand": "${containerWorkspaceFolder}/.devcontainer/post-create.sh ${containerWorkspaceFolder}",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -25,21 +26,15 @@
         "cloudflare.cloudflare-workers-bindings"
       ],
       "settings": {
-        "terminal.integrated.defaultProfile.linux": "bash",
-        "terminal.integrated.profiles.linux": {
-          "bash": {
-            "path": "/bin/bash"
-          },
-          "ash (OpenWrt)": {
-            "path": "/bin/ash"
-          }
-        }
+        "terminal.integrated.defaultProfile.linux": "bash"
       }
     }
   },
   "containerEnv": {
-    "EPL_ROLE": "engagement-platform",
+    "EPL_ROLE": "engagement-platform-operator",
     "EPL_OPENWRT_VERSION": "23.05.3",
-    "EPL_TARGET": "ramips/mt76x8"
+    "EPL_TARGET": "ramips/mt76x8",
+    "EPL_OPENWRT_SIBLING_IMAGE": "openwrt/rootfs:x86-64-23.05.3",
+    "EPL_OPENWRT_SIBLING_NAME": "ep-devcontainer"
   }
 }
