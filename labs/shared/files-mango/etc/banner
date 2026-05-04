@@ -1,0 +1,9 @@
+ ===========================================================
+   Errant Packet — Engagement Platform Labs (drop device)
+ -----------------------------------------------------------
+   OpenWrt 23.05.3 / ramips/mt76x8 / glinet_gl-mt300n-v2
+   Workshop slot: __SLOT__
+   Build:         __BUILD_ID__
+ ===========================================================
+   Authorized testing only. Logs to /tmp/enrollment.log.
+ ===========================================================

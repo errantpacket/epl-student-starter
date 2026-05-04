@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://errantpacket.com/epl/build-manifest.schema.json",
+  "title": "EPL build manifest",
+  "description": "Records resolved versions and SHA256 hashes for every artifact built during a lab session, so two students building on the same day get reproducible artifacts.",
+  "type": "object",
+  "required": ["role", "openwrt_version", "created_at"],
+  "properties": {
+    "role": {
+      "type": "string",
+      "enum": ["engagement-platform", "drop-mango"],
+      "description": "Which firmware contract this manifest describes."
+    },
+    "openwrt_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Pinned OpenWrt release (e.g., 23.05.3)."
+    },
+    "openwrt_target": {
+      "type": "string",
+      "description": "TARGET/SUBTARGET (e.g., ramips/mt76x8 for the Mango)."
+    },
+    "openwrt_profile": {
+      "type": "string",
+      "description": "Device profile (e.g., glinet_gl-mt300n-v2)."
+    },
+    "imagebuilder_image": {
+      "type": "string",
+      "description": "Docker image used for the build (digest preferred)."
+    },
+    "package_list_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA256 of the resolved opkg package list (sorted, newline-delimited)."
+    },
+    "image_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA256 of the produced sysupgrade .bin (drop-mango) or rootfs tarball (engagement-platform)."
+    },
+    "image_size_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Size of the produced image in bytes."
+    },
+    "tailscale_version": { "type": "string" },
+    "cloudflared_version": { "type": "string" },
+    "wrangler_version": { "type": "string" },
+    "node_version": { "type": "string" },
+    "python_version": { "type": "string" },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 UTC timestamp."
+    },
+    "source_date_epoch": {
+      "type": "integer",
+      "description": "SOURCE_DATE_EPOCH used for the build (for reproducible squashfs timestamps)."
+    },
+    "builder_host": {
+      "type": "string",
+      "description": "Hostname of the machine that produced the build (audit only)."
+    }
+  },
+  "additionalProperties": false
+}

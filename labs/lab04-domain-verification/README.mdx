@@ -1,0 +1,267 @@
+---
+title: "Domain & Cloudflare Verification"
+labNumber: 4
+duration: "15 minutes"
+day: "Day 1, Session 4"
+hardwareRequired: false
+widgets: ["ValidateOutputPaster", "MarkCompleteButton"]
+---
+
+import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
+import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
+
+# Lab 04 — Domain & Cloudflare Verification
+
+**Duration:** 15 minutes
+**Day:** 1, Session 4
+
+> **Hardware-agnostic.** This lab runs entirely on the student's laptop. No router, no devcontainer, no USB required. All you need is a browser and a terminal with `dig` and `curl` available.
+
+---
+
+## Learning objectives
+
+- Verify that your Cloudflare account has an active site (workshop subdomain or own domain).
+- Confirm DNS delegation is working and required workshop DNS records resolve.
+- Validate that Workers, D1, R2, and Zero Trust services are accessible in your account.
+- Confirm `wrangler` CLI is authenticated and can see your account.
+
+---
+
+## Pre-state
+
+- Cloudflare account created and email verified.
+- Either: workshop subdomain card in hand (`[8-character-hex].eplabs.cloud`), or own domain already added to Cloudflare with active nameserver delegation.
+- `wrangler` installed on your laptop (`npm install -g wrangler@4` or via the devcontainer).
+- `dig` available (`dnsutils` on Debian/Ubuntu, `bind-utils` on RHEL/Fedora, built-in on macOS).
+
+---
+
+## Walkthrough
+
+### Part 1 — Domain access verification (5 minutes)
+
+#### Workshop subdomain users
+
+1. **Verify subdomain assignment:**
+
+   ```
+   Your subdomain: [8-character-hex].eplabs.cloud
+   Example: a00f3f13.eplabs.cloud
+   ```
+
+2. **Add site to Cloudflare:**
+   - Login to cloudflare.com.
+   - Click "Add a Site".
+   - Enter your exact subdomain.
+   - Select "Free" plan.
+   - Wait for "Active" status (usually instant).
+
+3. **Verify ownership if prompted:**
+   - CF may request email verification.
+   - Use the email you registered with.
+   - Instructor can assist with verification.
+
+#### Own domain users
+
+1. **Verify domain status:**
+
+   ```sh
+   # Check your domain is active in CF dashboard.
+   # Status should show "Active".
+   # If "Pending", nameservers need updating at registrar.
+   ```
+
+2. **Test DNS control:**
+
+   ```sh
+   # Create test record in CF dashboard:
+   # Type: A
+   # Name: test
+   # Content: 1.2.3.4
+
+   # Verify from command line:
+   dig A test.yourdomain.com
+   # Should return 1.2.3.4
+   ```
+
+3. **Verify all services accessible:**
+   - Workers & Pages: Available in sidebar.
+   - DNS management: Can create/edit records.
+   - Storage services: D1 and R2 visible.
+
+---
+
+### Part 2 — DNS record setup (5 minutes)
+
+#### Required workshop records (both domain types)
+
+Create these DNS records for later labs:
+
+```sh
+# Wildcard record for Worker routing:
+# Type: A
+# Name: *
+# Content: 192.0.2.1  (RFC5737 documentation range — overridden by Workers routing)
+# Proxy: Proxied (orange cloud)
+
+# Root record for tunnel:
+# Type: A
+# Name: @ (or leave blank for own domain)
+# Content: 192.0.2.1
+# Proxy: Proxied (orange cloud)
+```
+
+#### Workshop subdomain additional setup
+
+```sh
+# Test connectivity record:
+# Type: A
+# Name: test
+# Content: 1.2.3.4
+# Proxy: DNS only (gray cloud)
+```
+
+---
+
+### Part 3 — Service access verification (5 minutes)
+
+#### Verify Cloudflare services are accessible
+
+1. **Workers & Pages:** Visible in left sidebar; can create a new Worker (do not deploy yet).
+2. **DNS Management:** Can view and edit DNS records; records created above appear in the list.
+3. **Storage:** D1 Database and R2 Object Storage visible under "Storage".
+4. **Zero Trust:** Access settings available; Tunnel options visible.
+
+#### Test DNS resolution from the command line
+
+Workshop subdomain users:
+
+```sh
+dig A test.a00f3f13.eplabs.cloud
+# Should return: 1.2.3.4
+
+dig A anything.a00f3f13.eplabs.cloud
+# Should return: 192.0.2.1 (wildcard record)
+```
+
+Own domain users:
+
+```sh
+dig A test.yourdomain.com
+# Should return: 1.2.3.4
+
+dig A anything.yourdomain.com
+# Should return: 192.0.2.1 (wildcard record)
+```
+
+#### Verify wrangler authentication
+
+```sh
+wrangler whoami
+# Expected output includes your Cloudflare account name and email.
+# If not logged in: wrangler login
+```
+
+---
+
+## Post-state
+
+All of the following must be true before proceeding to Lab 05:
+
+- Active Cloudflare site (workshop subdomain or own domain, status "Active").
+- Wildcard and root A records created and proxied.
+- `dig A test.<your-domain>` returns `1.2.3.4`.
+- Workers, D1, R2, and Zero Trust visible in the CF dashboard.
+- `wrangler whoami` returns your account name.
+
+From this point forward, workshop subdomain and own domain users follow identical labs. The only difference is your domain name in commands and configurations.
+
+| User type | Domain used in remaining labs |
+|-----------|-------------------------------|
+| Workshop subdomain | `a00f3f13.eplabs.cloud` (your hex) |
+| Own domain | `alice-workshop.dev` (your domain) |
+| Lab instructions use | `your-domain.com` (placeholder) |
+
+---
+
+## Validation
+
+Run the provided validator from your laptop:
+
+```sh
+chmod +x courses/engagement-platform-labs/labs/lab04-domain-verification/validate.sh
+DOMAIN=a00f3f13.eplabs.cloud \
+    courses/engagement-platform-labs/labs/lab04-domain-verification/validate.sh
+```
+
+Own domain users:
+
+```sh
+DOMAIN=yourdomain.com \
+    courses/engagement-platform-labs/labs/lab04-domain-verification/validate.sh
+```
+
+Or via the Makefile (set `DOMAIN` in environment first):
+
+```sh
+cd courses/engagement-platform-labs/labs
+DOMAIN=a00f3f13.eplabs.cloud make validate-lab04-domain-verification
+```
+
+<ValidateOutputPaster lab="lab04" client:load />
+
+---
+
+## Troubleshooting
+
+<details>
+<summary>Workshop subdomain — "Site not found" when adding to Cloudflare</summary>
+
+1. Double-check subdomain spelling exactly as on the card.
+2. Ensure you are using the correct email (the one registered during pre-workshop sign-up).
+3. Raise your hand — the instructor can verify the delegation status on the eplabs.cloud zone.
+
+</details>
+
+<details>
+<summary>Email verification requested</summary>
+
+1. Use the email address you registered with during pre-workshop.
+2. Check spam folder for the verification email.
+3. Instructor can resend verification if needed.
+
+</details>
+
+<details>
+<summary>Domain shows "Pending Nameserver Update"</summary>
+
+1. Update nameservers at your domain registrar to the two NS records Cloudflare shows.
+2. Wait 5–60 minutes for propagation.
+3. Use https://dnschecker.org to verify NS propagation before retrying.
+
+</details>
+
+<details>
+<summary>DNS records not resolving</summary>
+
+1. Wait a few minutes — CF DNS propagates quickly but not instantly.
+2. Try a specific resolver: `dig @1.1.1.1 A test.yourdomain.com`
+3. Check proxy status: gray cloud (DNS only) resolves to your IP; orange cloud (proxied) resolves to CF's anycast IPs.
+
+</details>
+
+<details>
+<summary>wrangler login fails or times out</summary>
+
+`wrangler login` opens a browser. If you are in the devcontainer, the browser may not open automatically. Use the URL printed to the terminal and open it manually on your laptop. Alternatively, use an API token: `wrangler login --api-token $(cat ~/.cloudflare-token)` if you have one pre-configured.
+
+</details>
+
+---
+
+**Questions about domain setup or Cloudflare access before proceeding to Lab 05 (Tailscale Mesh)?**
+
+*Instructor: verify all students have active CF access and required DNS records before continuing.*
+
+<MarkCompleteButton lab="lab04" client:load />

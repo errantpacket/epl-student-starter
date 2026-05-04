@@ -1,0 +1,392 @@
+---
+title: "Redirector / Edge Relay"
+labNumber: 13
+duration: "60 minutes"
+day: "Day 2, Session 6"
+hardwareRequired: false
+widgets: ["MarkCompleteButton", "ValidateOutputPaster", "ViewSource"]
+---
+
+import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
+import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
+import ViewSource from '@widgets/ViewSource.svelte';
+
+> **Self-referential hook:** The `/relay/*` route on the production version of this site's Worker demonstrates the malleable-profile pattern you are about to implement. The Worker serving these pages validates the same kind of header-and-path allowlist before forwarding requests. Inspect the production Worker's source via the "View this page's source" link in the sidebar to see the profile match logic alongside a real deployment.
+
+# Lab 13 — Redirector / Edge Relay
+
+**Duration: 60 minutes**
+**Day:** 2, Session 5
+
+A C2 redirector sits between the internet and your implant infrastructure. It forwards
+traffic that matches a known "malleable C2 profile" — a specific User-Agent, path, and
+header pattern — and returns an innocuous decoy page to everything else. This pattern,
+popularized by frameworks like Cobalt Strike and implemented in production tools like
+Oblique-Relay (`github.com/errantpacket/Oblique-Relay`), means a blue-team analyst who
+notices your Worker's hostname sees only a benign website, not a C2.
+
+In this lab you add a `/relay/*` route to the same Worker you have been building since Lab 07.
+Valid relay traffic is proxied to your devcontainer (via a second cloudflared ingress rule).
+Invalid traffic gets a plausible decoy HTML page. All decisions are logged to D1 `audit_log`.
+
+---
+
+## Learning objectives
+
+- Understand the malleable C2 profile pattern: UA + header + path whitelist.
+- Implement profile validation in a Cloudflare Worker with zero external dependencies.
+- Distinguish between profile-valid proxying and decoy-response serving.
+- Log relay decisions (with request fingerprints) to D1 for audit.
+- Configure a second cloudflared ingress rule to route the relay backend independently
+  from the `/v1/*` Worker API.
+
+---
+
+## Pre-state
+
+```sh
+# Worker is deployed and /v1/health returns 200 (Lab 09+ complete)
+curl -sf https://api.&#36;\{DOMAIN\}/v1/health | grep '"ok":true' && echo "worker ok"
+
+# D1 audit_log table exists (Lab 09)
+wrangler d1 execute fleet-database \
+    --command "SELECT name FROM sqlite_master WHERE type='table' AND name='audit_log'"
+
+# KV namespace RATE_LIMITS is bound (Lab 10) — relay_profile key lives here
+wrangler kv:key list --binding RATE_LIMITS | head -5
+
+# devcontainer is running nginx on port 8080 (or any port — configure below)
+curl -sf http://localhost:8080/ | head -3 || echo "start nginx in devcontainer first"
+
+# DOMAIN is set
+echo "DOMAIN=&#36;\{DOMAIN\}"
+echo "STUDENT=&#36;\{STUDENT\}"
+```
+
+---
+
+## Architecture: how the relay backend works
+
+The Worker runs on Cloudflare's edge — it cannot initiate Tailscale connections (Workers
+are stateless edge functions with no persistent network state). The relay backend must
+therefore be reachable from the Cloudflare edge via a public URL.
+
+The solution uses the **cloudflared tunnel** already established in Lab 06, but with a
+**second ingress rule** on a second hostname:
+
+```
+Internet request to https://app.<DOMAIN>/...
+    → CF DNS → cloudflared tunnel (same daemon, same tunnel credential)
+        → devcontainer nginx on port 8080
+```
+
+The Worker's `handleRelay()` function, when a request passes profile validation, calls
+`fetch("https://app.&#36;\{DOMAIN\}" + path)` — hitting the second tunnel hostname, which
+cloudflared routes to the devcontainer origin.
+
+This is architecturally clean: the first hostname (`api.<DOMAIN>`) is fully controlled by
+the Worker route; the second hostname (`app.<DOMAIN>`) bypasses the Worker and is purely
+a tunnel pass-through, protected by CF Access. The relay function acts as a profile-validating
+reverse proxy sitting in front of `app.<DOMAIN>`.
+
+### Add the second ingress rule
+
+Edit `cloudflared-config.yml` (from Lab 06) to add a second rule **before** the catchall:
+
+```yaml
+ingress:
+  - hostname: api.YOUR_DOMAIN
+    service: http://localhost:8787
+  - hostname: app.YOUR_DOMAIN       # <-- add this
+    service: http://localhost:8080  # nginx in devcontainer
+  - service: http_status:404
+```
+
+Then add a DNS record for `app.<DOMAIN>` pointing at the same tunnel:
+
+```sh
+# In the Cloudflare dashboard: DNS > Add record
+# Type: CNAME, Name: app, Target: <tunnel-id>.cfargotunnel.com
+
+# Or via wrangler CLI (if your account has the tunnel ID):
+# (Use the dashboard — it's two clicks and avoids token scope issues)
+```
+
+Restart cloudflared to pick up the new ingress rule:
+
+```sh
+# In the devcontainer:
+pkill cloudflared
+cloudflared tunnel --config ~/.cloudflared/config.yml run &
+sleep 3
+curl -sf https://app.&#36;\{DOMAIN\}/ | head -3 && echo "backend reachable"
+```
+
+Record the backend URL:
+
+```sh
+export RELAY_BACKEND="https://app.&#36;\{DOMAIN\}"
+```
+
+---
+
+## Walkthrough
+
+### 1. Upload the malleable profile to KV
+
+The relay profile is stored in KV under the key `relay_profile`. It defines which
+User-Agent, path prefix, and header must be present for a request to be forwarded.
+
+Review `labs/lab13-redirector-relay/profile.example.json`:
+
+```sh
+cat courses/engagement-platform-labs/labs/lab13-redirector-relay/profile.example.json
+```
+
+<ViewSource client:visible path="labs/lab13-redirector-relay/profile.example.json" />
+
+Upload it to KV:
+
+```sh
+wrangler kv:key put \
+    --binding RATE_LIMITS \
+    --path courses/engagement-platform-labs/labs/lab13-redirector-relay/profile.example.json \
+    relay_profile
+```
+
+Verify:
+
+```sh
+wrangler kv:key get --binding RATE_LIMITS relay_profile
+```
+
+Expected: JSON blob with `user_agent_pattern`, `required_header`, `allowed_paths`, and
+`backend` fields.
+
+### 2. Upload the decoy HTML to KV
+
+Store the decoy page content in KV under `relay_decoy_html`:
+
+```sh
+wrangler kv:key put \
+    --binding RATE_LIMITS \
+    --path courses/engagement-platform-labs/labs/lab13-redirector-relay/decoy.html \
+    relay_decoy_html
+```
+
+### 3. Deploy the updated Worker
+
+The `handleRelay()` function and the `/relay/*` route case have been added to
+`labs/lab07-first-worker/worker/src/index.js` as part of this lab.
+
+Review the changes:
+
+```sh
+cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
+grep -n 'handleRelay\|relay_profile\|relay_decoy\|/relay/' src/index.js | head -20
+```
+
+Deploy:
+
+```sh
+npx wrangler deploy
+```
+
+Expected output includes the updated Worker upload size. The `/relay/*` route is handled
+by the same Worker — no new wrangler.toml route entry is needed because the existing
+`api.YOUR_DOMAIN/v1/*` route... wait, `/relay/*` is NOT under `/v1/`. Add the relay route:
+
+```sh
+# In wrangler.toml, add a second route entry:
+# routes = [
+#     { pattern = "api.YOUR_DOMAIN/v1/*", zone_name = "YOUR_DOMAIN" },
+#     { pattern = "api.YOUR_DOMAIN/relay/*", zone_name = "YOUR_DOMAIN" }
+# ]
+sed -i '/pattern = "api\.'&#36;\{DOMAIN\}'\/v1\/\*"/a\    ,\n    { pattern = "api.'&#36;\{DOMAIN\}'/relay/*", zone_name = "'&#36;\{DOMAIN\}'" }' \
+    wrangler.toml
+```
+
+Or edit `wrangler.toml` directly — the routes array should look like:
+
+```toml
+routes = [
+    { pattern = "api.YOUR_DOMAIN/v1/*",    zone_name = "YOUR_DOMAIN" },
+    { pattern = "api.YOUR_DOMAIN/relay/*", zone_name = "YOUR_DOMAIN" }
+]
+```
+
+After editing:
+
+```sh
+npx wrangler deploy
+```
+
+### 4. Test the decoy response (invalid profile)
+
+No special headers — this simulates a casual browser or scanner:
+
+```sh
+curl -sv https://api.&#36;\{DOMAIN\}/relay/update 2>&1 | grep -E 'HTTP|< |<h'
+```
+
+Expected:
+- HTTP 200
+- Body contains HTML (the decoy page content from `decoy.html`)
+- No indication of a proxy or backend
+
+```sh
+# Assert the Content-Type is text/html
+curl -sI https://api.&#36;\{DOMAIN\}/relay/update | grep -i content-type
+# Expected: content-type: text/html; charset=utf-8
+```
+
+### 5. Test the relay response (valid profile)
+
+Use the exact User-Agent and header defined in `profile.example.json`:
+
+```sh
+curl -sv \
+    -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) EPL-Implant/1.0" \
+    -H "X-EPL-Profile: $(grep required_header_value \
+        courses/engagement-platform-labs/labs/lab13-redirector-relay/profile.example.json \
+        | sed 's/.*: *"//;s/".*//')" \
+    "https://api.&#36;\{DOMAIN\}/relay/update" 2>&1 | head -30
+```
+
+Expected:
+- HTTP 200 (or whatever the devcontainer nginx returns for `/update`)
+- Response body from the devcontainer (nginx default page or custom page)
+- `X-Relay-Backend` response header (the Worker adds this for debug during the workshop)
+
+If the devcontainer is serving the default nginx welcome page, you will see HTML with
+"Welcome to nginx!" or similar.
+
+### 6. Verify D1 audit log entries
+
+Both the decoy response and the relay response should have been logged:
+
+```sh
+wrangler d1 execute fleet-database \
+    --command "SELECT action, details, created_at FROM audit_log \
+               WHERE action='relay_decision' ORDER BY created_at DESC LIMIT 4"
+```
+
+Expected output:
+
+```
+action          | details                                    | created_at
+----------------|--------------------------------------------|-----------
+relay_decision  | {"result":"proxy","path":"/relay/update"}  | 2024-...
+relay_decision  | {"result":"decoy","path":"/relay/update"}  | 2024-...
+```
+
+Two rows: one `proxy`, one `decoy`, most recent first.
+
+### 7. Understand the profile match logic
+
+Open `src/index.js` and find `handleRelay()`. The match sequence is:
+
+1. Load `relay_profile` from KV (cached per-request; cold start costs ~1 KV read).
+2. Check path against `allowed_paths` array: request path must start with one of the
+   listed prefixes.
+3. Check User-Agent against `user_agent_pattern` (substring match for workshop
+   simplicity; a production version uses regex).
+4. Check `required_header` name and value against request headers.
+5. If all three match: `fetch(backend + path)`, stream response to client.
+6. If any check fails: load `relay_decoy_html` from KV, return 200 text/html.
+7. In both branches: INSERT into `audit_log` with `action='relay_decision'`,
+   `details` JSON containing `result`, `path`, and a fingerprint of the
+   User-Agent (first 32 chars, not full UA — avoid logging identifying data).
+
+---
+
+## Post-state
+
+When this lab is complete:
+
+- [ ] `wrangler.toml` has a `/relay/*` route entry for `api.&#36;\{DOMAIN\}`.
+- [ ] KV contains `relay_profile` and `relay_decoy_html` keys.
+- [ ] `app.&#36;\{DOMAIN\}` cloudflared ingress rule is active; `curl https://app.&#36;\{DOMAIN\}/` returns 200.
+- [ ] Invalid-profile curl to `/relay/*` returns decoy HTML.
+- [ ] Valid-profile curl to `/relay/*` returns proxied response from devcontainer.
+- [ ] D1 `audit_log` has a `relay_decision` row for each test request.
+
+---
+
+## Validation
+
+```sh
+export DOMAIN="<your-domain>"
+export STUDENT="<your-slot>"
+export SERVICE_TOKEN_ID="<from lab08>"
+export SERVICE_TOKEN_SECRET="<from lab08>"
+export RELAY_BACKEND="https://app.&#36;\{DOMAIN\}"  # set if non-default
+chmod +x courses/engagement-platform-labs/labs/lab13-redirector-relay/validate.sh
+courses/engagement-platform-labs/labs/lab13-redirector-relay/validate.sh
+```
+
+<ValidateOutputPaster client:load lab="lab13" />
+
+---
+
+## Troubleshooting
+
+<details>
+<summary>Valid-profile curl returns decoy HTML instead of proxied response</summary>
+
+Check the KV relay_profile content: `wrangler kv:key get --binding RATE_LIMITS relay_profile`.
+Confirm the `user_agent_pattern` string exactly matches a substring of the `-A` value you
+are sending, and that the `required_header` name and value match. Profile matching is
+case-sensitive in the workshop implementation.
+
+Also confirm the `/relay/*` Worker route is deployed: check the Cloudflare dashboard under
+Workers & Pages > fleet-gateway > Triggers > Routes.
+
+</details>
+
+<details>
+<summary>Valid-profile curl returns 502 or "upstream connect error"</summary>
+
+The backend (`app.&#36;\{DOMAIN\}`) is not reachable. Check:
+
+1. cloudflared is running in the devcontainer: `ps aux | grep cloudflared`.
+2. The `app.&#36;\{DOMAIN\}` ingress rule is present in `cloudflared-config.yml`.
+3. nginx is listening on the configured port: `curl -sf http://localhost:8080/`.
+4. The DNS CNAME for `app.&#36;\{DOMAIN\}` points at the correct tunnel ID.
+
+</details>
+
+<details>
+<summary>D1 audit_log has no relay_decision rows</summary>
+
+The Worker may not have the FLEET_DB D1 binding, or the binding name does not match the
+one in `src/index.js`. Check `wrangler.toml` for an active (uncommented) `[[d1_databases]]`
+block with `binding = "FLEET_DB"`. If the binding is missing, uncomment it, fill in the
+database_id from Lab 09, and redeploy.
+
+</details>
+
+<details>
+<summary>wrangler deploy fails after adding the second route</summary>
+
+The route array syntax in TOML requires commas between entries when they are on separate
+lines inside `[ ]`. Confirm wrangler.toml parses cleanly: `npx wrangler deploy --dry-run`.
+If it fails with a TOML parse error, use the multi-line form shown in Step 3.
+
+</details>
+
+---
+
+## Take-home extension
+
+The workshop profile matcher uses substring comparison for simplicity. The Oblique-Relay
+reference repo (`github.com/errantpacket/Oblique-Relay`) implements full Malleable C2
+profile parsing: regex UA patterns, multi-header requirements, body content checks, and
+KV-stored per-implant profile rotation. After the course, swap the hardcoded matcher in
+`handleRelay()` for the Oblique-Relay profile loader and test with a real Sliver or Havoc
+profile. The D1 audit log schema (action, details, created_at) is already compatible with
+Oblique-Relay's logging expectations.
+
+---
+
+<MarkCompleteButton client:load lab="lab13" />

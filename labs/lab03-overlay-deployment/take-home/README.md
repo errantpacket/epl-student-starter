@@ -1,0 +1,5 @@
+# Take-home: Lab 03 — MT3000 eMMC variant
+
+Full content lives in `take-home/lab03-mt3000-emmc/` (planned; not yet written).
+
+**Scope of that module:** The GL.iNet Beryl AX (GL-MT3000) ships with 128 GB eMMC flash, so the ExtRoot pattern used in the in-class lab is not only unnecessary — it would be a step backward. The inverse problem is managing abundant storage responsibly: partitioning the eMMC sensibly, choosing where logs and volatile state land to limit write amplification, and deciding what belongs in the squashfs base versus in a persistent data partition. The module walks through the `mediatek/filogic` profile, the MT3000's partition layout (`/dev/mmcblk0`), creating a dedicated data partition with `parted`, and configuring `/etc/fstab` to mount it at `/data` rather than overriding `/overlay`. It also covers setting `logd` to rotate to the data partition instead of the ramdisk, and using `overlay-partition` UCI config to pin the writable layer to a known partition rather than the default autodetect. Students who already completed Labs 01–03 on the Mango will recognize the structural parallel immediately.

@@ -1,0 +1,3 @@
+# epl-cli
+
+`epl-cli` is a small POSIX shell script that lets students running the Engagement Platform Labs inside a GitHub Codespace (or any devcontainer) sync their lab progress to `course.eplabs.cloud` without copy-pasting validate output into a browser widget. After a one-time `epl login` — which stores your course token from `/profile` in `~/.epl-token` — running `epl validate lab07-first-worker` executes the lab's local `validate.sh`, captures the output, and POSTs it to the course site for automatic grading; the lab page reflects "Complete" on the next hydration tick. The tool has no dependencies beyond `curl` (and optionally `jq` for nicer JSON parsing) — both are already present in the devcontainer. See `epl help` for the full subcommand list.

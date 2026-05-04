@@ -1,0 +1,572 @@
+#!/bin/sh
+# epl-cli — EPL student CLI for the Engagement Platform Labs course
+#
+# Syncs lab validate output and progress to course.eplabs.cloud.
+#
+# Subcommands:
+#   epl login              Store your course token (from /profile)
+#   epl logout             Remove stored token
+#   epl status             Show stored token info (no network)
+#   epl validate <lab>     Run lab validator and POST results to the course site
+#   epl complete <lab>     Manually mark a lab complete
+#   epl help               Show this help
+#   epl --version          Print version and exit
+#
+# chmod +x this file before use. The devcontainer post-create.sh should do
+# this automatically; if running manually: chmod +x tools/epl-cli
+#
+# Environment overrides:
+#   EPL_BASE_URL     Base URL (default: https://course.eplabs.cloud)
+#   EPL_TOKEN_FILE   Token storage path (default: ~/.epl-token)
+#   EPL_LABS_DIR     Additional lab search path
+#   EPL_TEST         Set to 1 to run self-test mode (print OK and exit)
+#
+# POSIX sh — no bashisms. Readable by design: students should cat this file.
+
+set -eu
+
+# ---------------------------------------------------------------------------
+# Self-test mode: verify the script loads without errors
+# ---------------------------------------------------------------------------
+if [ "${EPL_TEST:-}" = "1" ]; then
+    printf 'OK\n'
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+EPL_BASE_URL="${EPL_BASE_URL:-https://course.eplabs.cloud}"
+EPL_TOKEN_FILE="${EPL_TOKEN_FILE:-$HOME/.epl-token}"
+
+# ---------------------------------------------------------------------------
+# Color helpers — only when stdout is a TTY
+# ---------------------------------------------------------------------------
+if [ -t 1 ]; then
+    COLOR_GREEN='\033[0;32m'
+    COLOR_RED='\033[0;31m'
+    COLOR_YELLOW='\033[0;33m'
+    COLOR_RESET='\033[0m'
+else
+    COLOR_GREEN=''
+    COLOR_RED=''
+    COLOR_YELLOW=''
+    COLOR_RESET=''
+fi
+
+green()  { printf '%b%s%b\n' "${COLOR_GREEN}"  "$*" "${COLOR_RESET}"; }
+red()    { printf '%b%s%b\n' "${COLOR_RED}"    "$*" "${COLOR_RESET}"; }
+yellow() { printf '%b%s%b\n' "${COLOR_YELLOW}" "$*" "${COLOR_RESET}"; }
+
+# ---------------------------------------------------------------------------
+# JWT helpers (pure shell — no dependency on jq for token parsing)
+# ---------------------------------------------------------------------------
+
+# base64url_decode: decode a base64url-encoded string to stdout.
+# Adds missing padding, swaps - and _ for + and /, then calls base64 -d.
+base64url_decode() {
+    _in="$1"
+    # Translate URL-safe characters to standard base64
+    _in=$(printf '%s' "${_in}" | tr -- '-_' '+/')
+    # Compute needed padding
+    _len=$(printf '%s' "${_in}" | wc -c | tr -d ' ')
+    _pad=$(( (4 - (_len % 4)) % 4 ))
+    case "${_pad}" in
+        1) _in="${_in}=" ;;
+        2) _in="${_in}==" ;;
+    esac
+    printf '%s' "${_in}" | base64 -d 2>/dev/null
+}
+
+# jwt_field: extract a field from the JWT payload by field name.
+# Returns empty string if the field is absent or the JWT is malformed.
+# Uses grep/sed only — no jq required.
+jwt_field() {
+    _token="$1"
+    _field="$2"
+    # Split on '.' and take the second segment (payload)
+    _payload=$(printf '%s' "${_token}" | cut -d'.' -f2)
+    _decoded=$(base64url_decode "${_payload}" 2>/dev/null) || return 0
+    # Extract "field":"value" or "field":number  (simple single-line JSON)
+    printf '%s' "${_decoded}" | grep -o "\"${_field}\":[^,}]*" | head -1 \
+        | sed 's/^"[^"]*":[[:space:]]*//' | tr -d '"'
+}
+
+# validate_token_format: verify the token looks like a JWT (3 base64url segments)
+validate_token_format() {
+    _tok="$1"
+    # A JWT has exactly two dots
+    _dots=$(printf '%s' "${_tok}" | tr -cd '.' | wc -c | tr -d ' ')
+    if [ "${_dots}" != "2" ]; then
+        return 1
+    fi
+    # Each segment must be non-empty and contain only base64url characters
+    _seg1=$(printf '%s' "${_tok}" | cut -d'.' -f1)
+    _seg2=$(printf '%s' "${_tok}" | cut -d'.' -f2)
+    _seg3=$(printf '%s' "${_tok}" | cut -d'.' -f3)
+    for _seg in "${_seg1}" "${_seg2}" "${_seg3}"; do
+        if [ -z "${_seg}" ]; then
+            return 1
+        fi
+        # Check for characters outside base64url alphabet
+        _bad=$(printf '%s' "${_seg}" | tr -cd 'A-Za-z0-9+/=_-' | wc -c | tr -d ' ')
+        _len=$(printf '%s' "${_seg}" | wc -c | tr -d ' ')
+        if [ "${_bad}" != "${_len}" ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+# epoch_to_date: convert a Unix epoch to a human-readable local date.
+# Falls back to printing the raw epoch if date -d / date -r are unavailable.
+epoch_to_date() {
+    _epoch="$1"
+    # GNU date (Linux)
+    date -d "@${_epoch}" 2>/dev/null && return
+    # BSD date (macOS)
+    date -r "${_epoch}" 2>/dev/null && return
+    # Fallback
+    printf 'epoch %s\n' "${_epoch}"
+}
+
+# ---------------------------------------------------------------------------
+# Token file helpers
+# ---------------------------------------------------------------------------
+
+load_token() {
+    if [ ! -f "${EPL_TOKEN_FILE}" ]; then
+        red "No token found. Run: epl login" >&2
+        exit 1
+    fi
+    _raw=$(cat "${EPL_TOKEN_FILE}")
+    # Strip whitespace
+    printf '%s' "${_raw}" | tr -d '[:space:]'
+}
+
+# ---------------------------------------------------------------------------
+# Lab locator — search order documented in the plan
+# ---------------------------------------------------------------------------
+find_validate_sh() {
+    _lab="$1"
+    # 1. Codespace root → labs/<lab>/validate.sh
+    if [ -f "./labs/${_lab}/validate.sh" ]; then
+        printf './labs/%s/validate.sh' "${_lab}"
+        return 0
+    fi
+    # 2. Codespace cwd inside labs/ → ./<lab>/validate.sh
+    if [ -f "./${_lab}/validate.sh" ]; then
+        printf './%s/validate.sh' "${_lab}"
+        return 0
+    fi
+    # 3. Home labs dir
+    if [ -f "${HOME}/labs/${_lab}/validate.sh" ]; then
+        printf '%s/labs/%s/validate.sh' "${HOME}" "${_lab}"
+        return 0
+    fi
+    # 4. EPL_LABS_DIR override
+    if [ -n "${EPL_LABS_DIR:-}" ] && [ -f "${EPL_LABS_DIR}/${_lab}/validate.sh" ]; then
+        printf '%s/%s/validate.sh' "${EPL_LABS_DIR}" "${_lab}"
+        return 0
+    fi
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# curl wrapper — consistent flags, structured error handling
+# ---------------------------------------------------------------------------
+epl_curl() {
+    # Usage: epl_curl <output_var_name_for_body> <http_code_var_name> [curl args...]
+    # We write body to a temp file and capture the HTTP code.
+    _body_var="$1"; shift
+    _code_var="$1"; shift
+    _tmpfile=$(mktemp /tmp/epl-curl-XXXXXX)
+    _tmperr=$(mktemp /tmp/epl-curl-err-XXXXXX)
+    _http_code=$(
+        curl \
+            --silent \
+            --show-error \
+            --max-time 30 \
+            --write-out '%{http_code}' \
+            --output "${_tmpfile}" \
+            "$@" 2>"${_tmperr}"
+    ) || {
+        _curl_exit=$?
+        red "Network error: cannot reach ${EPL_BASE_URL}" >&2
+        if [ -s "${_tmperr}" ]; then
+            red "Details: $(cat "${_tmperr}")" >&2
+        fi
+        rm -f "${_tmpfile}" "${_tmperr}"
+        return "${_curl_exit}"
+    }
+    rm -f "${_tmperr}"
+    _body=$(cat "${_tmpfile}")
+    rm -f "${_tmpfile}" 2>/dev/null || true
+    # Propagate via stdout in a structured way
+    # The caller reads them by evaluating the output — but since POSIX sh
+    # can't return multiple values cleanly, we use a temp global approach.
+    eval "${_body_var}=\${_body}"
+    eval "${_code_var}=\${_http_code}"
+}
+
+# ---------------------------------------------------------------------------
+# HTTP response helpers
+# ---------------------------------------------------------------------------
+handle_http_error() {
+    _code="$1"
+    _body="$2"
+    case "${_code}" in
+        200|201|204)
+            return 0 ;;
+        401)
+            red "Token expired or invalid; run \`epl login\` to refresh." >&2
+            exit 1 ;;
+        4*)
+            red "Client error ${_code}: ${_body}" >&2
+            exit 1 ;;
+        5*)
+            red "Server error ${_code}; try again in a moment." >&2
+            exit 1 ;;
+        *)
+            red "Unexpected HTTP ${_code}: ${_body}" >&2
+            exit 1 ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: login
+# ---------------------------------------------------------------------------
+cmd_login() {
+    printf 'Visit %s/profile to generate your course token.\n' "${EPL_BASE_URL}"
+    printf 'Paste the token here (input hidden): '
+
+    # Disable echo if we have a TTY; some non-interactive shells may not
+    _stty_ok=0
+    if [ -t 0 ]; then
+        stty -echo 2>/dev/null && _stty_ok=1
+    fi
+
+    IFS= read -r _token
+
+    if [ "${_stty_ok}" = "1" ]; then
+        stty echo 2>/dev/null || true
+        printf '\n'
+    fi
+
+    # Validate format
+    if ! validate_token_format "${_token}"; then
+        red "That doesn't look like a valid token (expected 3 base64url segments separated by dots)." >&2
+        exit 1
+    fi
+
+    # Write to token file
+    _dir=$(dirname "${EPL_TOKEN_FILE}")
+    mkdir -p "${_dir}"
+    printf '%s\n' "${_token}" > "${EPL_TOKEN_FILE}"
+    chmod 600 "${EPL_TOKEN_FILE}"
+
+    green "Token saved to ${EPL_TOKEN_FILE}"
+
+    # Decode and print expiry as a courtesy
+    _exp=$(jwt_field "${_token}" "exp")
+    _sub=$(jwt_field "${_token}" "sub")
+    if [ -n "${_sub}" ]; then
+        printf 'Student: %s\n' "${_sub}"
+    fi
+    if [ -n "${_exp}" ]; then
+        _date=$(epoch_to_date "${_exp}" 2>/dev/null || printf 'epoch %s' "${_exp}")
+        printf 'Token valid until: %s\n' "${_date}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: logout
+# ---------------------------------------------------------------------------
+cmd_logout() {
+    if [ ! -f "${EPL_TOKEN_FILE}" ]; then
+        yellow "No token file found at ${EPL_TOKEN_FILE} — nothing to remove."
+        exit 0
+    fi
+    printf 'Remove token file %s? [y/N] ' "${EPL_TOKEN_FILE}"
+    IFS= read -r _ans
+    case "${_ans}" in
+        [Yy]|[Yy][Ee][Ss])
+            rm -f "${EPL_TOKEN_FILE}"
+            green "Logged out. Token file removed."
+            ;;
+        *)
+            printf 'Aborted.\n'
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: status
+# ---------------------------------------------------------------------------
+cmd_status() {
+    if [ ! -f "${EPL_TOKEN_FILE}" ]; then
+        yellow "No token stored. Run: epl login"
+        exit 0
+    fi
+
+    _token=$(cat "${EPL_TOKEN_FILE}" | tr -d '[:space:]')
+
+    if ! validate_token_format "${_token}"; then
+        red "Token file exists but content does not look like a valid JWT."
+        red "Run: epl login  to replace it."
+        exit 1
+    fi
+
+    _sub=$(jwt_field "${_token}" "sub")
+    _exp=$(jwt_field "${_token}" "exp")
+    _iss=$(jwt_field "${_token}" "iss")
+    _scope=$(jwt_field "${_token}" "scope")
+
+    printf 'Token file : %s\n' "${EPL_TOKEN_FILE}"
+    printf 'Issuer     : %s\n' "${_iss:-unknown}"
+    printf 'Student    : %s\n' "${_sub:-unknown}"
+    printf 'Scope      : %s\n' "${_scope:-unknown}"
+
+    if [ -n "${_exp}" ]; then
+        _now=$(date +%s 2>/dev/null || printf '0')
+        if [ "${_now}" -lt "${_exp}" ] 2>/dev/null; then
+            _date=$(epoch_to_date "${_exp}" 2>/dev/null || printf 'epoch %s' "${_exp}")
+            green "Status     : valid (expires ${_date})"
+        else
+            _date=$(epoch_to_date "${_exp}" 2>/dev/null || printf 'epoch %s' "${_exp}")
+            red "Status     : EXPIRED (expired ${_date})"
+            red "Run: epl login  to refresh."
+        fi
+    else
+        yellow "Expiry     : unknown (could not decode exp claim)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: validate <lab>
+# ---------------------------------------------------------------------------
+cmd_validate() {
+    if [ $# -lt 1 ]; then
+        red "Usage: epl validate <lab>  (e.g. epl validate lab07-first-worker)" >&2
+        exit 1
+    fi
+    _lab="$1"
+    _token=$(load_token)
+
+    # Find validate.sh
+    if ! _vsh=$(find_validate_sh "${_lab}"); then
+        red "Cannot find validate.sh for lab '${_lab}'." >&2
+        printf 'Searched:\n' >&2
+        printf '  ./labs/%s/validate.sh\n' "${_lab}" >&2
+        printf '  ./%s/validate.sh\n' "${_lab}" >&2
+        printf '  %s/labs/%s/validate.sh\n' "${HOME}" "${_lab}" >&2
+        if [ -n "${EPL_LABS_DIR:-}" ]; then
+            printf '  %s/%s/validate.sh\n' "${EPL_LABS_DIR}" "${_lab}" >&2
+        fi
+        red "Set EPL_LABS_DIR to your labs root, or cd to the repo root." >&2
+        exit 1
+    fi
+
+    printf 'Running validator: %s\n' "${_vsh}"
+    printf '%s\n' "-------------------------------------------------------"
+
+    # Run validator, capture combined output, preserve exit code.
+    # We cannot use a pipeline here (POSIX sh has no PIPESTATUS), so we
+    # write to a temp file first, then print it — students still see output.
+    _tmpout=$(mktemp /tmp/epl-validate-XXXXXX)
+    _validate_exit=0
+    sh "${_vsh}" > "${_tmpout}" 2>&1 || _validate_exit=$?
+
+    # Show the captured output to the terminal
+    cat "${_tmpout}"
+
+    printf '%s\n' "-------------------------------------------------------"
+
+    _output=$(cat "${_tmpout}")
+    rm -f "${_tmpout}"
+
+    if [ "${_validate_exit}" -ne 0 ]; then
+        yellow "Validator exited with code ${_validate_exit}. Sending results to server anyway (server checks for [FAIL] lines)."
+    fi
+
+    # Build the JSON body with the raw output. The server expects a plain
+    # string (matching the paste-into-widget flow), so we JSON-encode the
+    # multi-line/special-char output via jq or python3 — both are present
+    # in the EPL devcontainer's package list.
+    if command -v jq >/dev/null 2>&1; then
+        _body=$(printf '%s' "${_output}" | jq -Rs '{output: .}')
+    elif command -v python3 >/dev/null 2>&1; then
+        _body=$(printf '%s' "${_output}" | python3 -c \
+            'import sys,json; print(json.dumps({"output": sys.stdin.read()}))')
+    else
+        red "Need jq or python3 to JSON-encode validate output. Install one." >&2
+        exit 1
+    fi
+
+    printf 'Posting results to %s/api/validate/%s ...\n' "${EPL_BASE_URL}" "${_lab}"
+
+    _resp_body=""
+    _resp_code=""
+    epl_curl _resp_body _resp_code \
+        -X POST \
+        -H "Authorization: Bearer ${_token}" \
+        -H "Content-Type: application/json" \
+        -d "${_body}" \
+        "${EPL_BASE_URL}/api/validate/${_lab}" || exit $?
+
+    handle_http_error "${_resp_code}" "${_resp_body}"
+
+    # Parse response: try jq first, fall back to grep/sed
+    if command -v jq >/dev/null 2>&1; then
+        _valid=$(printf '%s' "${_resp_body}" | jq -r '.valid // empty')
+        _marked=$(printf '%s' "${_resp_body}" | jq -r '.marked_complete // empty')
+        _hint=$(printf '%s' "${_resp_body}" | jq -r '.hints // empty')
+    else
+        _valid=$(printf '%s' "${_resp_body}" | grep -o '"valid":[^,}]*' | head -1 \
+                 | sed 's/"valid":[[:space:]]*//' | tr -d '"')
+        _marked=$(printf '%s' "${_resp_body}" | grep -o '"marked_complete":[^,}]*' | head -1 \
+                  | sed 's/"marked_complete":[[:space:]]*//' | tr -d '"')
+        _hint=$(printf '%s' "${_resp_body}" | grep -o '"hints":"[^"]*"' | head -1 \
+                | sed 's/"hints":"//;s/"//')
+    fi
+
+    printf '\n'
+    if [ "${_valid}" = "true" ]; then
+        green "[PASS] Validation passed."
+        if [ "${_marked}" = "true" ]; then
+            green "       Lab marked complete on the course site."
+        fi
+    else
+        red "[FAIL] Validation did not pass."
+        if [ -n "${_hint}" ] && [ "${_hint}" != "null" ]; then
+            yellow "Hint: ${_hint}"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: complete <lab>
+# ---------------------------------------------------------------------------
+cmd_complete() {
+    if [ $# -lt 1 ]; then
+        red "Usage: epl complete <lab>" >&2
+        exit 1
+    fi
+    _lab="$1"
+    _token=$(load_token)
+
+    printf 'Marking lab %s complete on %s ...\n' "${_lab}" "${EPL_BASE_URL}"
+
+    _body='{"status":"complete"}'
+
+    _resp_body=""
+    _resp_code=""
+    epl_curl _resp_body _resp_code \
+        -X POST \
+        -H "Authorization: Bearer ${_token}" \
+        -H "Content-Type: application/json" \
+        -d "${_body}" \
+        "${EPL_BASE_URL}/api/progress/${_lab}" || exit $?
+
+    handle_http_error "${_resp_code}" "${_resp_body}"
+
+    # Parse response
+    if command -v jq >/dev/null 2>&1; then
+        _status=$(printf '%s' "${_resp_body}" | jq -r '.status // empty')
+        _completed_at=$(printf '%s' "${_resp_body}" | jq -r '.completed_at // empty')
+    else
+        _status=$(printf '%s' "${_resp_body}" | grep -o '"status":"[^"]*"' | head -1 \
+                  | sed 's/"status":"//;s/"//')
+        _completed_at=$(printf '%s' "${_resp_body}" | grep -o '"completed_at":"[^"]*"' | head -1 \
+                        | sed 's/"completed_at":"//;s/"//')
+    fi
+
+    green "Lab ${_lab}: ${_status}"
+    if [ -n "${_completed_at}" ] && [ "${_completed_at}" != "null" ]; then
+        printf 'Completed at: %s\n' "${_completed_at}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: help
+# ---------------------------------------------------------------------------
+cmd_help() {
+    cat <<'EOF'
+epl-cli — Engagement Platform Labs course helper
+
+USAGE
+  epl <subcommand> [args]
+
+SUBCOMMANDS
+  login              Prompt for your course token and save it locally.
+                     Get your token from https://course.eplabs.cloud/profile
+
+  logout             Remove the locally stored token (with confirmation).
+
+  status             Show stored token info (student email, expiry).
+                     No network calls; reads only the local token file.
+
+  validate <lab>     Run the lab's validate.sh and POST the output to the
+                     course site for grading.  Example:
+                       epl validate lab07-first-worker
+
+  complete <lab>     Manually mark a lab complete (for hand-graded labs).
+                       epl complete lab05-tailscale-mesh
+
+  help, --help       Show this message.
+
+  --version          Print version and exit.
+
+ENVIRONMENT
+  EPL_BASE_URL      Override the course site URL (default: https://course.eplabs.cloud)
+  EPL_TOKEN_FILE    Override token storage path   (default: ~/.epl-token)
+  EPL_LABS_DIR      Additional directory to search for labs/<lab>/validate.sh
+  EPL_TEST          Set to 1 for self-test mode (prints OK and exits 0)
+
+LAB SEARCH ORDER
+  epl validate searches for <lab>/validate.sh in:
+    1. ./labs/<lab>/validate.sh     (run from repo root)
+    2. ./<lab>/validate.sh          (run from labs/ directory)
+    3. ~/labs/<lab>/validate.sh
+    4. $EPL_LABS_DIR/<lab>/validate.sh
+
+FIRST-TIME SETUP
+  epl login
+  epl validate lab07-first-worker
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Entry point — dispatch on first argument
+# ---------------------------------------------------------------------------
+_cmd="${1:-help}"
+shift || true   # consume $1; remaining args passed to subcommand
+
+case "${_cmd}" in
+    --version|-V)
+        printf 'epl-cli 1.0\n'
+        ;;
+    --help|-h|help)
+        cmd_help
+        ;;
+    login)
+        cmd_login "$@"
+        ;;
+    logout)
+        cmd_logout "$@"
+        ;;
+    status)
+        cmd_status "$@"
+        ;;
+    validate)
+        cmd_validate "$@"
+        ;;
+    complete)
+        cmd_complete "$@"
+        ;;
+    *)
+        red "Unknown subcommand: ${_cmd}" >&2
+        printf 'Run: epl help\n' >&2
+        exit 1
+        ;;
+esac

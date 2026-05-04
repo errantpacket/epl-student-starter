@@ -1,0 +1,6 @@
+services:
+  imagebuilder:
+    build: .
+    volumes:
+      - .:/labs
+      - ./output:/home/buildbot/openwrt-imagebuilder/bin

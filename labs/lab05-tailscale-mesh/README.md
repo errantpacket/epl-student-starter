@@ -1,0 +1,501 @@
+# Lab 05 — Tailscale Mesh Network
+
+**Duration:** 60 minutes
+**Day:** 1, Session 5
+
+You will bring up a real two-node Tailscale network (tailnet) between two OpenWrt
+systems: the VS Code devcontainer (your engagement platform, `ep-<student>`) and the
+GL.iNet Mango (your drop device, `drop-<student>`). Both will appear in the tailnet by
+name, resolve each other via magicDNS, and be governed by an ACL policy that separates
+operator-side nodes from drop-side nodes.
+
+This is not a simulation. You are joining the workshop instructor's real Tailscale network
+using ephemeral keys the instructor issued. By the end of the lab, `tailscale ping
+drop-<student>` from the devcontainer will echo real latency to the Mango sitting in
+front of you.
+
+---
+
+## Learning objectives
+
+- Understand Tailscale ACL tags and why `tag:operator` and `tag:device` must be
+  separate: the engagement platform (operator) can reach the drop device, but drop
+  devices cannot reach other students' drop devices.
+- Generate and use ephemeral auth keys with specific ACL tag scopes.
+- Bring up `tailscale` on two heterogeneous OpenWrt nodes (x86-64 container and MIPS
+  router) using the same CLI pattern.
+- Verify magicDNS resolution and peer presence via `tailscale status --json`.
+- Record the Tailscale version used to `labs/output/build-manifest.json` so all students
+  pin the same version.
+
+---
+
+## Pre-state
+
+Before starting this lab, confirm all of the following:
+
+```sh
+# Lab 03 ExtRoot is working — /overlay is on USB
+ssh root@192.168.8.1 'df -h | grep overlay'
+# Expected: /dev/sda1 is /overlay, several GB free
+
+# tailscale binary is present on the Mango (installed in Lab 03)
+ssh root@192.168.8.1 'tailscale --version'
+# Expected: a version line, e.g.  1.76.6
+
+# tailscale is present in the devcontainer
+docker exec ep-devcontainer tailscale --version
+# Expected: same or close version
+
+# Lab 04 domain is verified — you have an eplabs.cloud subdomain
+# Lab 04 does not set up Tailscale, but confirms your CF account is active.
+# This lab's Tailscale config is independent of CF; they converge in Lab 06.
+
+# You have the instructor-issued Tailscale auth keys (two keys: operator + device)
+# These are on your student card or in the workshop Discord channel.
+echo "Have both auth keys in hand before proceeding."
+```
+
+**Instructor preparation (complete before class):**
+
+1. Create the workshop tailnet (free Tailscale account is sufficient for a class).
+2. Install the `acl-policy.example.hujson` from this lab directory as the tailnet ACL.
+3. Issue one ephemeral auth key per student, tagged `tag:device` — for the Mango.
+4. Issue one ephemeral auth key per student, tagged `tag:operator` — for the devcontainer.
+5. Write both keys to each student's assignment card.
+6. Ephemeral key TTL recommendation: 12 hours (expires end of workshop day).
+
+---
+
+## Walkthrough
+
+### 1. Verify the ACL policy is in place
+
+The ACL policy must be installed on the tailnet **before** any devices join. The
+instructor completes this step. Students: confirm with the instructor that the policy
+is live before proceeding.
+
+The policy file is `acl-policy.example.hujson` in this lab directory. It defines three
+tags:
+
+| Tag | Who uses it | Description |
+|-----|-------------|-------------|
+| `tag:operator` | Devcontainer (`ep-<student>`) | Engagement platform — can reach drop devices |
+| `tag:device` | Mango (`drop-<student>`) | Drop device — cannot reach other drops |
+| `tag:instructor` | Instructor's laptop | Can reach all nodes |
+
+The critical ACL rule: `tag:operator` can initiate connections to `tag:device`. Nodes
+tagged `tag:device` cannot initiate connections to each other. This enforces lateral
+isolation between student drop devices on the same workshop tailnet.
+
+**Instructor note:** If you want to confirm the ACL is active before class, join one
+test node with `tag:device` and one with `tag:operator` and verify the operator can
+`tailscale ping` the device but the device cannot `tailscale ping` back to the operator
+unless you temporarily allow it. The ACL blocks initiation, not return traffic for
+existing sessions.
+
+---
+
+### 2. Determine the Tailscale version in the devcontainer
+
+Pin the version before joining the tailnet so the build-manifest records it accurately.
+
+```sh
+# From inside the devcontainer (VS Code terminal or docker exec)
+docker exec ep-devcontainer tailscale --version
+```
+
+Expected output (your exact version may differ from this example):
+
+```
+1.76.6
+  tailscale commit: abc1234...
+  go version: go1.22.x
+```
+
+Record the first line (e.g., `1.76.6`). You will write this to build-manifest in step 7.
+
+Also check the Mango:
+
+```sh
+ssh root@192.168.8.1 'tailscale --version'
+```
+
+**Expected:** the major.minor version matches the devcontainer. The opkg package on
+OpenWrt 23.05.3 may differ by a patch version from the devcontainer binary; that is
+acceptable. If the major version differs (e.g., 1.76 vs 1.74), the magicDNS and ACL
+features we use are still compatible across minor versions. Note both versions; they
+will both appear in the manifest.
+
+---
+
+### 3. Bring up Tailscale on the devcontainer (tag:operator)
+
+The devcontainer is the **engagement platform** — the operator node. Tag it
+`tag:operator`, not `tag:device`. Lab 12's `99-enroll.sh` uses `tag:device` for the
+Mango. The tags must differ for the ACL to enforce operator-vs-drop separation.
+
+```sh
+# Inside the devcontainer
+# OPERATOR_KEY is the key your instructor issued tagged tag:operator
+
+OPERATOR_KEY="tskey-auth-XXXXXXXXXXXX"   # replace with your key
+STUDENT="yourname"                        # replace with your student slot (e.g. alpha)
+
+tailscale up \
+  --auth-key="${OPERATOR_KEY}" \
+  --hostname="ep-${STUDENT}" \
+  --accept-routes \
+  --ssh
+```
+
+Wait a few seconds, then verify:
+
+```sh
+tailscale status
+```
+
+Expected output (excerpt):
+
+```
+100.x.x.x   ep-yourname    yourname@  linux   -
+```
+
+The `ep-yourname` hostname should appear. The IP is from the Tailscale CGNAT range
+(`100.64.0.0/10`).
+
+Also confirm the tag was applied:
+
+```sh
+tailscale status --json | grep -A2 '"Tags"'
+# Expected:  "Tags": ["tag:operator"]
+```
+
+If `Tags` is empty or missing, the auth key was not scoped to a tag. Ask the instructor
+to re-issue the key with the `tag:operator` pre-approval set.
+
+---
+
+### 4. Bring up Tailscale on the Mango (tag:device)
+
+SSH into the Mango and run the equivalent command using the **device** auth key.
+
+```sh
+ssh root@192.168.8.1
+```
+
+Inside the Mango shell:
+
+```sh
+# On the Mango
+DEVICE_KEY="tskey-auth-YYYYYYYYYYYY"   # replace with your device key
+STUDENT="yourname"                     # same slot as above
+
+# Enable and start the tailscale daemon if it is not already running
+/etc/init.d/tailscale enable
+/etc/init.d/tailscale start
+sleep 5
+
+tailscale up \
+  --auth-key="${DEVICE_KEY}" \
+  --hostname="drop-${STUDENT}" \
+  --accept-routes \
+  --ssh \
+  --timeout=60s
+```
+
+Wait for the command to return, then check status:
+
+```sh
+tailscale status
+```
+
+Expected (from the Mango shell):
+
+```
+100.x.x.y   drop-yourname  yourname@  linux   -
+100.x.x.x   ep-yourname    yourname@  linux   idle; offers exit node
+```
+
+You should see both your own nodes listed as peers. If only one appears, give it 10–15
+seconds — tailnet peer exchange can lag behind the key registration.
+
+---
+
+### 5. Verify magicDNS resolution from the devcontainer
+
+Back in the devcontainer:
+
+```sh
+# Ping the Mango by magicDNS name
+tailscale ping drop-${STUDENT}
+```
+
+Expected output:
+
+```
+pong from drop-yourname (100.x.x.y) via DERP(ord) in 15ms
+pong from drop-yourname (100.x.x.y) via 192.168.8.1:41641 in 2ms
+```
+
+The first `pong` may come via a DERP relay (Tailscale's relay server) before a
+direct path is established. The second pong confirms a direct peer-to-peer path is
+up.
+
+Also verify DNS resolution:
+
+```sh
+# MagicDNS resolves short hostname to tailnet IP
+tailscale ip --4 drop-${STUDENT}
+# Expected: 100.x.x.y  (a Tailscale CGNAT address)
+
+# Ping by short name (magicDNS must be enabled on the tailnet)
+ping -c 3 drop-${STUDENT}
+```
+
+If DNS does not resolve, magicDNS may be disabled on the tailnet. The instructor
+must enable it: Tailscale admin console > DNS > Enable magicDNS.
+
+---
+
+### 6. Demonstrate ACL enforcement (operator-to-device only)
+
+From the **devcontainer** (`tag:operator`), SSH to the Mango via tailnet:
+
+```sh
+# This should succeed — operator can reach device
+ssh root@drop-${STUDENT}
+exit
+```
+
+Now try the reverse: from the **Mango**, attempt to reach the devcontainer:
+
+```sh
+# On the Mango
+# This should fail — device cannot initiate to operator
+tailscale ping ep-${STUDENT}
+# Expected: "no route to host" or timeout, because the ACL blocks device→operator
+```
+
+**Teaching moment:** The ACL controls connection *initiation*, not return traffic for
+sessions that the operator already established. The Mango can reply to SSH sessions
+the devcontainer opens, but it cannot open new sessions to the devcontainer.
+
+Also confirm cross-student isolation: if another student's Mango is in the tailnet
+as `drop-beta`, your devcontainer (`tag:operator`) should be able to reach it (because
+operator → device is allowed), but your `drop-yourname` (`tag:device`) should not. The
+instructor will demonstrate this cross-student test on the shared display.
+
+---
+
+### 7. Record version pins to build-manifest.json
+
+The build-manifest accumulates version pins across labs. Lab 05 adds `tailscale_version`.
+
+```sh
+# From the devcontainer (or laptop), run the following to merge the tailscale version
+# into the existing build-manifest.json.  jq is available in the devcontainer.
+
+MANIFEST="labs/output/build-manifest.json"
+TS_VERSION=$(docker exec ep-devcontainer tailscale --version | head -1)
+
+# If the manifest doesn't exist yet, create a minimal stub
+if [ ! -f "$MANIFEST" ]; then
+  mkdir -p labs/output
+  printf '{"role":"engagement-platform","openwrt_version":"23.05.3","created_at":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MANIFEST"
+fi
+
+# Merge tailscale_version into the manifest
+UPDATED=$(jq --arg v "$TS_VERSION" '. + {tailscale_version: $v}' "$MANIFEST")
+printf '%s\n' "$UPDATED" > "$MANIFEST"
+
+echo "tailscale_version recorded: $TS_VERSION"
+cat "$MANIFEST"
+```
+
+The manifest now contains `"tailscale_version": "1.76.6"` (or whatever your version
+is). Both students building on the same day should see the same version because the
+devcontainer's opkg pull is pinned to the 23.05.3 feed snapshot. If versions differ
+across students, the instructor should investigate whether the opkg feed was updated
+mid-workshop; pinning the binary at build time (devcontainer Dockerfile) is the
+mitigation described in the take-home extension below.
+
+---
+
+## Post-state
+
+When this lab is complete, the following must all be true:
+
+- [ ] `tailscale status --json` inside the devcontainer shows `ep-<student>` with
+  `tag:operator` and lists `drop-<student>` as a peer.
+- [ ] `tailscale status --json` on the Mango shows `drop-<student>` with `tag:device`
+  and lists `ep-<student>` as a peer.
+- [ ] `tailscale ping drop-<student>` from the devcontainer returns pong with latency.
+- [ ] `ssh root@drop-<student>` from the devcontainer succeeds via tailnet.
+- [ ] `tailscale ping ep-<student>` from the Mango fails or is refused (ACL blocks
+  device→operator initiation).
+- [ ] `labs/output/build-manifest.json` contains a `tailscale_version` field.
+
+---
+
+## Validation
+
+Run `validate.sh` from the repo root:
+
+```sh
+bash courses/engagement-platform-labs/labs/lab05-tailscale-mesh/validate.sh
+```
+
+Or via the Makefile:
+
+```sh
+cd courses/engagement-platform-labs/labs
+make validate-lab05-tailscale-mesh
+```
+
+Before running:
+
+```sh
+chmod +x courses/engagement-platform-labs/labs/lab05-tailscale-mesh/validate.sh
+```
+
+The script:
+1. Queries `tailscale status --json` inside the devcontainer and asserts `ep-<student>`
+   appears in Self with `tag:operator`.
+2. SSHes into the Mango via `192.168.8.1` and queries `tailscale status --json`, asserting
+   `drop-<student>` appears in Self with `tag:device`.
+3. Asserts both hostnames appear as peers in each node's status output.
+4. Runs `tailscale ping drop-<student>` from the devcontainer and asserts a non-empty
+   pong.
+5. Asserts `labs/output/build-manifest.json` contains `tailscale_version`.
+
+The script reads `STUDENT` from the environment. Export it before running:
+
+```sh
+export STUDENT=yourname
+bash ...validate.sh
+```
+
+---
+
+## Troubleshooting
+
+<details>
+<summary>tailscale up returns "node is not pre-approved"</summary>
+
+The auth key was created without a pre-approved ACL tag. The instructor must:
+
+1. Go to the Tailscale admin console > Settings > Auth keys.
+2. Delete the issued key.
+3. Create a new key, click "Add tags", select the correct tag (either `tag:operator` or
+   `tag:device`), and confirm the tag is in the "Pre-approved" section.
+4. Re-issue the key to the student.
+
+</details>
+
+<details>
+<summary>tailscale up hangs on the Mango</summary>
+
+The Mango's low-memory environment (128MB RAM) can cause the tailscale daemon to be
+slow starting. Try:
+
+```sh
+# On the Mango
+/etc/init.d/tailscale restart
+sleep 10
+tailscale status
+```
+
+If the daemon is not running:
+
+```sh
+logread | grep tailscale
+# Look for OOM or missing module errors
+```
+
+If there is an OOM error, close any other opkg-installed daemons temporarily:
+`/etc/init.d/uhttpd stop` is usually safe during this lab.
+
+</details>
+
+<details>
+<summary>magicDNS resolution fails (ping: bad address)</summary>
+
+MagicDNS requires that it be enabled on the tailnet in the Tailscale admin console.
+Confirm with your instructor. Also confirm the tailscale daemon is the system DNS
+resolver — on the devcontainer, `cat /etc/resolv.conf` should show `100.100.100.100`
+(the Tailscale DNS server) as the first nameserver.
+
+If the devcontainer resolv.conf points elsewhere, tailscale may have been started
+without DNS control. On the devcontainer:
+
+```sh
+tailscale up --accept-dns=true ...
+```
+
+If running inside a container with a pre-set `/etc/resolv.conf` that cannot be
+overwritten, add `--accept-dns=false` and resolve using explicit IP instead:
+
+```sh
+DROP_IP=$(tailscale ip --4 drop-${STUDENT})
+ping -c 3 "$DROP_IP"
+```
+
+</details>
+
+<details>
+<summary>ACL test shows device CAN reach operator (expected to fail)</summary>
+
+The ACL policy may not be installed or may have a permissive default (`"*": ["*"]`).
+Ask the instructor to re-verify the tailnet ACL policy matches `acl-policy.example.hujson`.
+The key rule is that `tag:device` is NOT listed as a source in any accept rule that
+targets `tag:operator`.
+
+Note: if the tailnet was freshly created, the default ACL allows all traffic. The
+workshop ACL must be applied before the test is meaningful.
+
+</details>
+
+<details>
+<summary>Both nodes appear in status but pong shows only DERP, no direct path</summary>
+
+A direct peer-to-peer path requires that at least one side has an open UDP port
+reachable from the other. In a workshop environment with double-NAT, DERP relay is
+expected and fully functional. The direct path optimization is a nice-to-have; the
+tailnet works correctly over DERP. If a direct path is important for a specific
+exercise, connect both the Mango and the laptop to the same local network segment.
+
+</details>
+
+---
+
+## Take-home extension
+
+**Version-pinning the Tailscale binary at devcontainer build time**
+
+The devcontainer currently installs `tailscale` via `opkg install tailscale` at build
+time, which resolves to whatever version is current in the OpenWrt 23.05.3 feed. For a
+workshop where reproducibility matters, pin the version explicitly in the Dockerfile:
+
+```dockerfile
+# Example: pin to a specific Tailscale opkg package version
+# First, find the exact filename: opkg list tailscale
+# Then pin:
+RUN opkg update && opkg install tailscale=1.76.6-1
+```
+
+The opkg package version string format is `<upstream_version>-<openwrt_revision>`.
+Check the available versions at:
+`https://downloads.openwrt.org/releases/23.05.3/packages/x86_64/packages/`
+
+For the Mango, the version is whatever is in the overlay at Lab 03 install time. If
+version parity between the devcontainer and Mango matters, install from the same opkg
+feed snapshot by noting the package URL and fetching it by exact filename.
+
+**MT3000 take-home track**
+
+See `take-home/lab05-mt3000-tailscale/` for the same exercise on the GL-MT3000
+(mediatek/filogic). The MT3000 has more RAM and eMMC storage, so the tailscale daemon
+starts faster and direct path establishment is more reliable in double-NAT scenarios.
+The ACL tag structure and CLI commands are identical.

@@ -1,0 +1,45 @@
+# cloudflared tunnel configuration — EPL Lab 06
+#
+# Place this file at /etc/cloudflared/config.yml inside the devcontainer.
+# The /etc/cloudflared directory is a named Docker volume (epl-cloudflared)
+# defined in .devcontainer/devcontainer.json and persists across container
+# rebuilds.
+#
+# Replace TUNNEL_ID and STUDENT with your values.
+#
+# Usage:
+#   cloudflared tunnel --config /etc/cloudflared/config.yml run
+#   cloudflared tunnel --config /etc/cloudflared/config.yml info
+#
+# Version pinned in this workshop: cloudflared 2024.10.0
+
+# The tunnel UUID from the Cloudflare dashboard.
+# Zero Trust > Networks > Tunnels > [your tunnel] > Overview
+tunnel: TUNNEL_ID
+
+# Absolute path to the tunnel credential JSON downloaded from the dashboard.
+# The filename is the tunnel UUID; the volume ensures it survives container restarts.
+credentials-file: /etc/cloudflared/TUNNEL_ID.json
+
+# Ingress rules are evaluated top-to-bottom.
+# The first matching hostname rule wins.
+# The last rule (no hostname) is the catch-all and must be present.
+ingress:
+  # Primary API hostname — Lab 07 will deploy a Worker here that replaces
+  # the nginx placeholder. The tunnel ingress rule stays unchanged after Lab 07;
+  # the Worker route at the Cloudflare edge takes precedence over the tunnel
+  # for public traffic once the Worker is deployed.
+  - hostname: api.STUDENT.eplabs.cloud
+    service: http://localhost:8787
+
+  # Catch-all: return 404 for any request that does not match a hostname rule.
+  # This prevents cloudflared from accidentally proxying unintended hostnames.
+  - service: http_status:404
+
+# Optional: logging configuration.
+# Uncomment to write cloudflared logs to a file instead of stdout.
+# loglevel: info
+# logfile: /var/log/cloudflared.log
+
+# Optional: metrics server for health probes and Prometheus scraping.
+# metrics: 0.0.0.0:2000

@@ -1,0 +1,78 @@
+// EPL Workshop Tailnet ACL Policy
+//
+// Install this policy in the Tailscale admin console before the workshop:
+//   https://login.tailscale.com/admin/acls
+//
+// Three tags are defined:
+//
+//   tag:operator   — VS Code devcontainer (ep-<student>), the engagement platform.
+//                    Operators can reach all drop devices on the tailnet.
+//
+//   tag:device     — GL.iNet Mango (drop-<student>), the drop device.
+//                    Devices can only respond to operator-initiated sessions;
+//                    they cannot initiate connections to each other or to operators.
+//
+//   tag:instructor — Instructor's machine. Can reach all nodes in both directions.
+//                    Useful for in-class debugging and demonstrations.
+//
+// ACL rule summary:
+//   instructor → any          (full access for demos and break-glass)
+//   operator   → device       (engagement platform controls the drop)
+//   device     → (nothing)    (drops do not initiate to operators or peers)
+//
+// MagicDNS: must be enabled on the tailnet for short-name resolution to work
+// (tailscale ping drop-alpha instead of tailscale ping 100.x.x.y).
+//
+// SSH: Tailscale SSH is enabled for operator→device access. The device responds
+// to SSH sessions opened by the operator but does not open outbound SSH itself.
+
+{
+  // Tag ownership — defines which identities may apply each tag to auth keys.
+  // Replace the email with the instructor's Tailscale account email.
+  "tagOwners": {
+    "tag:instructor": ["autogroup:owner"],
+    "tag:operator":   ["autogroup:owner"],
+    "tag:device":     ["autogroup:owner"]
+  },
+
+  // Access control rules.
+  "acls": [
+    // Instructors have unrestricted access to all nodes.
+    {
+      "action": "accept",
+      "src":    ["tag:instructor"],
+      "dst":    ["*:*"]
+    },
+
+    // Operators (devcontainers) can reach drop devices on any port.
+    // This covers: SSH (22), tailscale ping (ICMP), future operator→drop APIs.
+    {
+      "action": "accept",
+      "src":    ["tag:operator"],
+      "dst":    ["tag:device:*"]
+    }
+
+    // Note: there is no rule allowing tag:device to initiate outbound connections.
+    // Drop devices can only respond to sessions established by operators or instructors.
+    // This provides lateral isolation: a compromised drop cannot reach other drops.
+  ],
+
+  // Tailscale SSH configuration.
+  // Operators and instructors can SSH into drop devices via tailnet.
+  "ssh": [
+    {
+      "action": "accept",
+      "src":    ["tag:instructor", "tag:operator"],
+      "dst":    ["tag:device"],
+      "users":  ["root", "autogroup:nonroot"]
+    }
+  ],
+
+  // MagicDNS — required for short-name resolution (drop-alpha, ep-alpha, etc.)
+  // Enable in Tailscale admin console: DNS > Enable MagicDNS
+  // The nameservers below are Cloudflare's resolvers for non-tailnet queries.
+  "dns": {
+    "nameservers": ["1.1.1.1", "1.0.0.1"],
+    "magic":       true
+  }
+}

@@ -1,0 +1,163 @@
+#!/bin/sh
+# /etc/uci-defaults/99-enroll.sh — Mango drop-device first-boot enrollment.
+#
+# OpenWrt convention: every executable in /etc/uci-defaults/ runs once on
+# first boot, then is deleted. We use that to:
+#   1. wait for upstream connectivity
+#   2. bring Tailscale up with an ephemeral, tag-scoped auth key
+#   3. POST device facts to the workshop Worker (CF Access service token)
+#   4. self-delete and exit so we don't run again
+#
+# Template variables — substituted at IMAGE BUILD time by lab12
+# bake-secrets.sh, NOT at runtime:
+#   {{WORKER_URL}}            — https://api.<student>.eplabs.cloud
+#   {{TAILSCALE_KEY}}         — ephemeral, tag:device, single-use
+#   {{SERVICE_TOKEN_ID}}      — CF Access service token (ID)
+#   {{SERVICE_TOKEN_SECRET}}  — CF Access service token (secret)
+#   {{SLOT}}                  — workshop slot ID, e.g. "drop-alpha"
+#
+# Origin: docs/technical_specifications.md:13-151 (workshop spec).
+# Hardened for POSIX sh / busybox; no pipefail, no $RANDOM, no arrays.
+
+WORKER_URL="{{WORKER_URL}}"
+TAILSCALE_KEY="{{TAILSCALE_KEY}}"
+SERVICE_TOKEN_ID="{{SERVICE_TOKEN_ID}}"
+SERVICE_TOKEN_SECRET="{{SERVICE_TOKEN_SECRET}}"
+SLOT="{{SLOT}}"
+
+LOG="/tmp/enrollment.log"
+SELF="/etc/uci-defaults/99-enroll.sh"
+MAX_ENROLL_RETRIES=5
+NETWORK_TIMEOUT_SECS=120
+
+log() {
+    printf '[%s] %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >> "$LOG"
+}
+
+fail() {
+    log "FATAL: $*"
+    # Leave script in place so a later boot can retry; ops can inspect log.
+    exit 1
+}
+
+# 1. Wait for upstream connectivity.
+wait_for_network() {
+    log "waiting for upstream connectivity (timeout ${NETWORK_TIMEOUT_SECS}s)"
+    elapsed=0
+    while [ "$elapsed" -lt "$NETWORK_TIMEOUT_SECS" ]; do
+        if ping -c 1 -W 3 1.1.1.1 >/dev/null 2>&1; then
+            log "ok   network reachable after ${elapsed}s"
+            return 0
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+    return 1
+}
+
+# 2. Bring Tailscale up.
+start_tailscale() {
+    if ! command -v tailscale >/dev/null 2>&1; then
+        log "ERROR: tailscale binary not found — did Lab 03 ExtRoot install fail?"
+        return 1
+    fi
+
+    # Ensure daemon is running. On stock OpenWrt+ExtRoot, tailscale ships an
+    # init script; if it failed at boot, restart it now.
+    /etc/init.d/tailscale enabled || /etc/init.d/tailscale enable
+    /etc/init.d/tailscale running || /etc/init.d/tailscale start
+    sleep 5
+
+    HOSTNAME="${SLOT}-$(cat /proc/sys/kernel/random/uuid 2>/dev/null | head -c 8 || echo deadbeef)"
+    log "tailscale up hostname=$HOSTNAME"
+
+    if tailscale up \
+        --auth-key="$TAILSCALE_KEY" \
+        --hostname="$HOSTNAME" \
+        --accept-routes \
+        --ssh \
+        --timeout=60s \
+        ${TS_EXTRA_ARGS:-}
+    then
+        log "ok   tailscale up; magicDNS hostname=$HOSTNAME"
+        # Give the daemon a moment to settle so subsequent `tailscale status` is real
+        sleep 10
+        return 0
+    fi
+
+    log "ERROR: tailscale up failed"
+    return 1
+}
+
+# 3. POST enrollment facts to the Worker.
+enroll_with_worker() {
+    HOSTNAME=$(tailscale status --peers=false --json 2>/dev/null \
+                | jsonfilter -e '@.Self.DNSName' 2>/dev/null \
+                | sed 's/\.$//')
+    DEVICE_ID=$(awk -F: '/Serial/ {gsub(" ",""); print $2}' /proc/cpuinfo | head -1)
+    [ -z "$DEVICE_ID" ] && DEVICE_ID=$(cat /sys/class/net/eth0/address 2>/dev/null | tr -d ':')
+    [ -z "$DEVICE_ID" ] && DEVICE_ID="unknown-$(cat /proc/sys/kernel/random/uuid | head -c 12)"
+
+    if [ -z "$HOSTNAME" ]; then
+        log "ERROR: empty Tailscale hostname; cannot enroll"
+        return 1
+    fi
+
+    PAYLOAD=$(cat <<EOF
+{
+  "device_id": "$DEVICE_ID",
+  "device_type": "mango",
+  "tailscale_hostname": "$HOSTNAME",
+  "slot": "$SLOT",
+  "metadata": {
+    "uptime_s": "$(awk '{print $1}' /proc/uptime)",
+    "free_kb":  "$(awk '/MemAvailable/ {print $2}' /proc/meminfo)",
+    "flash_kb": "$(df / | awk 'NR==2 {print $4}')"
+  }
+}
+EOF
+)
+
+    attempt=1
+    while [ "$attempt" -le "$MAX_ENROLL_RETRIES" ]; do
+        log "enroll attempt $attempt → $WORKER_URL/v1/devices/enroll"
+
+        HTTP=$(curl -sS -o /tmp/enroll.body -w '%{http_code}' \
+            -X POST "$WORKER_URL/v1/devices/enroll" \
+            -H "CF-Access-Client-Id: $SERVICE_TOKEN_ID" \
+            -H "CF-Access-Client-Secret: $SERVICE_TOKEN_SECRET" \
+            -H 'Content-Type: application/json' \
+            --connect-timeout 10 --max-time 30 \
+            --data "$PAYLOAD" 2>>"$LOG" || echo 000)
+
+        case "$HTTP" in
+            200|201)
+                log "ok   enroll HTTP $HTTP body=$(head -c 256 /tmp/enroll.body)"
+                rm -f /tmp/enroll.body
+                return 0
+                ;;
+            *)
+                log "WARN enroll HTTP $HTTP body=$(head -c 256 /tmp/enroll.body)"
+                ;;
+        esac
+
+        sleep $((attempt * 5))
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
+# 4. Main.
+log "=== EPL drop-device enrollment starting (slot=$SLOT) ==="
+
+wait_for_network    || fail "no network within ${NETWORK_TIMEOUT_SECS}s"
+start_tailscale     || fail "tailscale up failed"
+enroll_with_worker  || fail "worker enrollment failed after $MAX_ENROLL_RETRIES attempts"
+
+log "ok   enrollment complete; removing self"
+# Defer self-deletion to next-boot in case logs need extraction
+rm -f "$SELF"
+sync
+log "=== EPL drop-device enrollment finished ==="
+exit 0

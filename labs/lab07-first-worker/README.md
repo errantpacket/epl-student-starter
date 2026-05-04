@@ -1,0 +1,345 @@
+# Lab 07 — First Worker Deployment
+
+**Duration: 60 minutes**
+**Day:** 2, Session 1
+
+The engagement platform's control plane lives in a Cloudflare Worker. Everything in Days
+2–5 — device enrollment, command dispatch, ChatOps decoding, signed artifact URLs — runs
+through this single Worker route. In this lab you deploy the skeleton: a real `/v1/health`
+endpoint and three stub endpoints that later labs will fill in. When this lab is done,
+`https://api.<DOMAIN>/v1/health` returns valid JSON from the Cloudflare edge, and the
+cloudflared tunnel from Lab 06 is no longer the authority for that path.
+
+The Worker is the "front door" from here on. Commit to understanding it.
+
+---
+
+## Learning objectives
+
+- Understand the wrangler project model: `wrangler.toml`, `src/index.js`, `package.json`.
+- Deploy a Worker to a custom domain route (`api.<DOMAIN>/v1/*`).
+- Read and write environment variables and future binding stubs in `wrangler.toml`.
+- Use `wrangler tail` to stream live logs from a deployed Worker.
+- Understand how a Worker route preempts the cloudflared tunnel for matching paths.
+
+---
+
+## Pre-state
+
+Before starting this lab confirm:
+
+```sh
+# Lab 06 tunnel is up and the cloudflared origin is reachable
+curl -sf https://api.${DOMAIN}/  && echo "tunnel ok" || echo "tunnel not responding (acceptable if nginx is stopped)"
+
+# wrangler is installed and authenticated (confirmed in Lab 04)
+wrangler whoami
+
+# node 20.x is available (devcontainer provides it)
+node --version   # should be v20.x
+
+# DOMAIN is exported in your shell (replace with your actual domain)
+echo ${DOMAIN}   # e.g. a00f3f13.eplabs.cloud
+```
+
+If `DOMAIN` is not set:
+
+```sh
+export DOMAIN="<your-8-char-hex>.eplabs.cloud"
+```
+
+---
+
+## Walkthrough
+
+### 1. Inspect the pre-staged worker directory
+
+This lab provides a ready-to-deploy `worker/` directory so you spend time understanding
+the structure rather than typing boilerplate. Inspect it:
+
+```sh
+ls courses/engagement-platform-labs/labs/lab07-first-worker/worker/
+# worker/
+# ├── package.json
+# ├── wrangler.toml
+# └── src/
+#     └── index.js
+```
+
+### 2. Install dependencies
+
+```sh
+cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
+npm install
+# added N packages
+```
+
+This installs `wrangler 4.x` locally. You can also use the globally-installed wrangler
+from the devcontainer, but pinning locally ensures everyone in the workshop runs the same
+version.
+
+### 3. Review wrangler.toml
+
+Open `worker/wrangler.toml`. Key fields to understand:
+
+```toml
+name = "fleet-gateway"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+routes = [
+    { pattern = "api.YOUR_DOMAIN/v1/*", zone_name = "YOUR_DOMAIN" }
+]
+```
+
+The `routes` block tells Cloudflare to intercept any request to
+`api.<DOMAIN>/v1/*` and send it to this Worker instead of passing it through
+the tunnel. Paths outside `v1/*` — root, `/status`, etc. — still flow through
+the cloudflared origin.
+
+The D1, KV, and R2 binding sections are commented out. You will uncomment them
+in Labs 09 and 10 when those services are provisioned. Do not remove the comments.
+
+**Set your domain in wrangler.toml before deploying:**
+
+```sh
+# Replace YOUR_DOMAIN throughout wrangler.toml
+sed -i "s/YOUR_DOMAIN/${DOMAIN}/g" wrangler.toml
+```
+
+Verify the substitution:
+
+```sh
+grep "${DOMAIN}" wrangler.toml
+```
+
+### 4. Review src/index.js
+
+Open `worker/src/index.js` and read through the route dispatcher. The structure follows
+the reference implementation in `docs/technical_specifications.md` (lines 172–220):
+
+- `fetch()` — CORS preflight, then delegates to `handleRequest()`.
+- `handleRequest()` — switch on `pathname`; each case calls a handler function.
+- `handleHealth()` — **fully implemented**: returns `{ok: true, version, timestamp}`.
+- `handleEnroll()` — **stub**: returns HTTP 501 with a TODO pointing to Lab 09.
+- `handleDeviceList()` — **stub**: returns HTTP 501.
+- `handleCommand()` — **stub**: returns HTTP 501.
+
+The stub pattern is intentional. Later labs extend this file by replacing stubs with real
+D1, KV, and R2 calls. The route dispatcher does not change — only the handler bodies grow.
+
+### 5. Deploy the Worker
+
+```sh
+cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
+npx wrangler deploy
+```
+
+Expected output:
+
+```
+Total Upload: N kB / gzip: N kB
+Uploaded fleet-gateway (N sec)
+Published fleet-gateway (N sec)
+  https://fleet-gateway.<YOUR_CF_SUBDOMAIN>.workers.dev
+  api.YOUR_DOMAIN/v1/*
+```
+
+The second URL is the custom route. That is the one that matters.
+
+**If you see a "route already taken" error:** another Worker on your account may have a
+conflicting route. Check the Cloudflare dashboard under Workers & Pages > your Worker >
+Triggers > Routes and remove any stale route from earlier testing.
+
+### 6. Verify the health endpoint
+
+```sh
+curl -s https://api.${DOMAIN}/v1/health | jq .
+```
+
+Expected response:
+
+```json
+{
+  "ok": true,
+  "version": "1.0.0",
+  "timestamp": "2024-09-23T10:00:00.000Z"
+}
+```
+
+HTTP status must be 200. The timestamp will reflect actual wall-clock time.
+
+### 7. Verify the stub endpoints return 501
+
+```sh
+# Enroll stub
+curl -s -o /dev/null -w "%{http_code}" \
+    -X POST https://api.${DOMAIN}/v1/devices/enroll
+# Expected: 501
+
+# Device list stub
+curl -s -o /dev/null -w "%{http_code}" \
+    https://api.${DOMAIN}/v1/devices
+# Expected: 501
+
+# Command stub (any device id)
+curl -s -o /dev/null -w "%{http_code}" \
+    -X POST https://api.${DOMAIN}/v1/commands/test-device
+# Expected: 501
+```
+
+501 is the correct response here — "Not Implemented, come back in Lab 09."
+
+### 8. Stream live logs with wrangler tail
+
+Open a second terminal window (keep it visible during the validation step):
+
+```sh
+cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
+npx wrangler tail
+```
+
+In your first terminal, curl the health endpoint again:
+
+```sh
+curl -s https://api.${DOMAIN}/v1/health > /dev/null
+```
+
+You should see a log entry appear in the `wrangler tail` window within a second or two.
+This is your primary debugging surface for all Worker development in later labs.
+
+Press `Ctrl+C` to stop tailing when done.
+
+### 9. Understand tunnel/Worker interaction
+
+The cloudflared tunnel from Lab 06 is still running. The Worker now handles all paths
+matching `api.<DOMAIN>/v1/*`. Here is what happens for different paths:
+
+| Request path | Handler |
+|---|---|
+| `api.<DOMAIN>/v1/health` | Worker (this lab) |
+| `api.<DOMAIN>/v1/devices/enroll` | Worker stub (501) |
+| `api.<DOMAIN>/` | cloudflared tunnel → devcontainer origin |
+| `api.<DOMAIN>/status` | cloudflared tunnel → devcontainer origin |
+
+The Worker and the tunnel coexist. The Cloudflare edge evaluates the Worker route first;
+any non-matching path falls through to the tunnel's DNS record. This is the intended
+architecture: the Worker is the API surface; the tunnel is the operator escape hatch for
+direct access to the devcontainer during development.
+
+---
+
+## Post-state
+
+When this lab is complete:
+
+- [ ] `https://api.${DOMAIN}/v1/health` returns HTTP 200 with `{ok: true, ...}`.
+- [ ] `/v1/devices/enroll`, `/v1/devices`, and `/v1/commands/<id>` return HTTP 501.
+- [ ] `wrangler tail` produces a log entry for each request.
+- [ ] `worker/wrangler.toml` contains your actual domain (not `YOUR_DOMAIN`).
+- [ ] `worker/src/index.js` is committed to the repo (it is the foundation for Labs 09–14).
+
+---
+
+## Validation
+
+Run from the repo root after exporting `DOMAIN`:
+
+```sh
+export DOMAIN="<your-domain>"
+bash courses/engagement-platform-labs/labs/lab07-first-worker/validate.sh
+```
+
+Or make it executable and run directly:
+
+```sh
+chmod +x courses/engagement-platform-labs/labs/lab07-first-worker/validate.sh
+courses/engagement-platform-labs/labs/lab07-first-worker/validate.sh
+```
+
+The script exits 0 on success and prints the failing assertion on the first error.
+
+---
+
+## Troubleshooting
+
+<details>
+<summary>wrangler deploy fails: "Authentication error"</summary>
+
+- Run `wrangler whoami` — if it returns an error, run `wrangler login` and re-authenticate.
+- In the devcontainer, ensure the wrangler auth token is persisted. The devcontainer mounts
+  `~/.config/` as a named volume by default; if not, log in again after each container restart.
+
+</details>
+
+<details>
+<summary>wrangler deploy fails: "Missing field: zone_name"</summary>
+
+- The `YOUR_DOMAIN` placeholder was not substituted. Run the `sed` command in step 3 and
+  verify with `grep "${DOMAIN}" wrangler.toml`.
+
+</details>
+
+<details>
+<summary>curl returns "Error 1101: Worker threw exception"</summary>
+
+- Run `wrangler tail` in one terminal and repeat the curl in another to see the exception
+  message. Most common cause: a syntax error in `src/index.js`.
+- Redeploy after fixing: `npx wrangler deploy`.
+
+</details>
+
+<details>
+<summary>curl returns the cloudflared tunnel origin (not the Worker)</summary>
+
+- The Worker route may not have been applied yet. Wait 30 seconds after deploy and retry.
+- Verify the route in the Cloudflare dashboard: Workers & Pages > fleet-gateway > Triggers
+  > Routes. The route `api.YOUR_DOMAIN/v1/*` must appear there.
+- If the route is missing, the `sed` substitution may have failed silently. Check the raw
+  `wrangler.toml` and re-run `sed`.
+
+</details>
+
+<details>
+<summary>wrangler tail shows no logs</summary>
+
+- `wrangler tail` connects to the Cloudflare log stream for your Worker. It requires an
+  active Worker deployment. If the deployment failed, there is nothing to tail.
+- If the Worker is deployed but logs are silent, confirm you are curling the custom domain
+  route (`api.<DOMAIN>/v1/health`) not the workers.dev subdomain — both exist, but tail
+  shows all traffic.
+
+</details>
+
+<details>
+<summary>HTTP 404 instead of 501 for stub endpoints</summary>
+
+- Check that your curl is targeting the correct path. A 404 means the request matched the
+  Worker route but fell through to the `default` case in `handleRequest()`. If you see 404
+  for `/v1/devices`, the route pattern in the switch statement is correct but the path
+  might have a typo in your curl command.
+
+</details>
+
+---
+
+## Take-home extension
+
+**Re-run Lab 04 validation.** Now that a Worker is serving `api.<DOMAIN>/v1/health`,
+re-run the Lab 04 validate script:
+
+```sh
+bash courses/engagement-platform-labs/labs/lab04-domain-verification/validate.sh
+```
+
+In Lab 04, the validator accepted Cloudflare origin-error codes (521–524) as "proxy active"
+because no Worker existed. With the Worker deployed, the health endpoint returns HTTP 200
+and the validate script should show a clean pass instead of an error-code bypass. This
+confirms that the Worker has fully replaced the tunnel origin for the `/v1/*` path space.
+
+**Workers.dev subdomain.** Your Worker is also available at
+`https://fleet-gateway.<YOUR_CF_SUBDOMAIN>.workers.dev`. This URL bypasses CF Access (Lab 08
+only covers the custom domain route). After completing Lab 08, test that the workers.dev
+URL is NOT protected by Access — this is a known gap to address in a production deployment
+(add a Workers route policy or disable the workers.dev subdomain in the dashboard under
+Workers & Pages > fleet-gateway > Settings > Domains & Routes).

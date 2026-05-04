@@ -1,0 +1,587 @@
+# Lab 06 — Cloudflare Tunnel from the devcontainer
+
+**Duration:** 45 minutes
+**Day:** 1, Session 6
+
+You will expose a service from inside your VS Code devcontainer to the public internet
+using Cloudflare Tunnel (`cloudflared`). No inbound firewall ports open. No public IP.
+No port-forwarding. The tunnel makes an outbound connection to Cloudflare's edge and
+serves traffic at `api.<student>.eplabs.cloud`.
+
+The service exposed here is a trivial nginx page — a placeholder to prove the tunnel
+works end-to-end. Lab 07 replaces this page with a real Cloudflare Worker. Lab 13 turns
+the same tunnel into a C2 redirector. Lab 14 uses it for signed-URL artifact uploads from
+the Mango. The infrastructure you stand up today runs unchanged through all four labs.
+
+**What the Mango is NOT doing in this lab:** the tunnel origin is the devcontainer, not
+the Mango. The Mango is already in the tailnet (Lab 05) and will be reached from the
+devcontainer via Tailscale, not via the public tunnel. Keep that architecture clear — it
+matters in Lab 13.
+
+---
+
+## Learning objectives
+
+- Understand Cloudflare Tunnel architecture: outbound connection from origin to edge,
+  no inbound firewall rule required.
+- Write and deploy a `cloudflared` ingress configuration with a named tunnel and a
+  hostname rule.
+- Serve a real HTTP response from inside the devcontainer to a public HTTPS URL.
+- Verify the tunnel is live from outside (laptop browser, curl) and that
+  `cloudflared` status shows "connected."
+- Record the `cloudflared` version to `labs/output/build-manifest.json`.
+- Understand how CF Access protection integrates (Lab 08 adds it; Lab 06 prepares the
+  tunnel without it, which is intentional for learning).
+
+---
+
+## Pre-state
+
+Before starting this lab, confirm all of the following:
+
+```sh
+# Lab 05 tailnet is up — both nodes appear in status
+docker exec ep-devcontainer tailscale status
+
+# cloudflared is present in the devcontainer (installed in Dockerfile)
+docker exec ep-devcontainer cloudflared --version
+# Expected output starts with:  cloudflared version 2024.10.0
+
+# Your eplabs.cloud subdomain is active (Lab 04 verified this)
+# The DNS record api.<student>.eplabs.cloud will point to the tunnel after this lab.
+
+# Cloudflare dashboard access
+# You need to be able to log in to dash.cloudflare.com to create a tunnel.
+```
+
+**Cloudflared version used in this course:**
+
+The devcontainer Dockerfile pins `cloudflared` at `2024.10.0` (amd64 binary pulled from
+GitHub releases). This is the version used throughout Labs 06–14. The exact SHA256 is
+`PLACEHOLDER_PIN_AT_BUILD_TIME` in the Dockerfile; the instructor replaces this with the
+real SHA when building the image.
+
+Do not update `cloudflared` inside the running devcontainer — use the pinned version.
+If your devcontainer shows a different version, rebuild the image (`make engagement-
+platform`) before continuing.
+
+---
+
+## Walkthrough
+
+### 1. Create a named tunnel in the Cloudflare dashboard
+
+A named tunnel is a persistent object — it has a UUID, a name, and a credential file.
+You create it once; `cloudflared` uses the credential file to authenticate on startup.
+
+1. Open [dash.cloudflare.com](https://dash.cloudflare.com) and select your account.
+2. Go to **Zero Trust** > **Networks** > **Tunnels**.
+3. Click **Add a tunnel**, select **Cloudflared**, click **Next**.
+4. Name the tunnel: `ep-<student>` (e.g., `ep-alpha`). Click **Save tunnel**.
+5. On the next screen, Cloudflare displays a `cloudflared` token string. **Ignore the
+   auto-install instructions** — you will run `cloudflared` manually with a config file.
+6. Instead, click **Next**, then click the **Overview** tab for your new tunnel. Note
+   the **Tunnel ID** (a UUID like `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
+7. Download the tunnel credential JSON:
+   - In the dashboard, go to **Connectors** tab for your tunnel.
+   - Click the three-dot menu > **Download credentials JSON**.
+   - Save the file as `<tunnel-id>.json`.
+
+Copy the credential file into the devcontainer's cloudflared volume:
+
+```sh
+# From your laptop (replace TUNNEL_ID and path to your downloaded file)
+TUNNEL_ID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+docker cp ~/Downloads/${TUNNEL_ID}.json ep-devcontainer:/etc/cloudflared/${TUNNEL_ID}.json
+```
+
+Verify it landed:
+
+```sh
+docker exec ep-devcontainer ls -la /etc/cloudflared/
+# Expected: <tunnel-id>.json present
+```
+
+The `/etc/cloudflared/` path is a named Docker volume (`epl-cloudflared`) defined in
+`devcontainer.json`. It persists across container restarts — you will not need to copy
+the credential file again.
+
+---
+
+### 2. Write the cloudflared configuration file
+
+The example configuration file is `cloudflared-config.example.yml` in this lab
+directory. Use it as your template.
+
+Inside the devcontainer, create the config:
+
+```sh
+# Replace TUNNEL_ID and STUDENT with your values
+TUNNEL_ID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+STUDENT="alpha"
+
+cat > /etc/cloudflared/config.yml << EOF
+tunnel: ${TUNNEL_ID}
+credentials-file: /etc/cloudflared/${TUNNEL_ID}.json
+
+ingress:
+  - hostname: api.${STUDENT}.eplabs.cloud
+    service: http://localhost:8787
+  - service: http_status:404
+EOF
+```
+
+Verify it:
+
+```sh
+cat /etc/cloudflared/config.yml
+```
+
+Expected output:
+
+```yaml
+tunnel: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+credentials-file: /etc/cloudflared/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.json
+
+ingress:
+  - hostname: api.alpha.eplabs.cloud
+    service: http://localhost:8787
+  - service: http_status:404
+```
+
+---
+
+### 3. Add the DNS CNAME record
+
+The tunnel needs a DNS record that points your hostname to the Cloudflare Tunnel edge.
+`cloudflared` can do this automatically:
+
+```sh
+# Inside the devcontainer
+docker exec -it ep-devcontainer sh
+
+cloudflared tunnel route dns ${TUNNEL_ID} api.${STUDENT}.eplabs.cloud
+```
+
+Expected output:
+
+```
+2024/10/xx xx:xx:xx INF Added CNAME api.alpha.eplabs.cloud which will route to this tunnel tunnelID=xxxxxxxx-...
+```
+
+Verify the record was created:
+
+```sh
+# From your laptop
+dig CNAME api.${STUDENT}.eplabs.cloud +short
+# Expected: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.cfargotunnel.com.
+```
+
+DNS propagation for Cloudflare-managed zones is typically under 30 seconds.
+
+---
+
+### 4. Start a test service on port 8787
+
+The tunnel maps `api.<student>.eplabs.cloud` to `http://localhost:8787`. Start a
+trivial nginx response on that port to prove the end-to-end path.
+
+`nginx` is installed in the devcontainer. Configure a minimal server block:
+
+```sh
+# Inside the devcontainer
+cat > /tmp/nginx-test.conf << 'EOF'
+worker_processes 1;
+daemon off;
+
+events { worker_connections 16; }
+
+http {
+  server {
+    listen 8787;
+    location / {
+      default_type text/plain;
+      return 200 "EPL engagement platform: tunnel ok\n";
+    }
+    location /health {
+      default_type application/json;
+      return 200 '{"status":"ok","origin":"devcontainer"}';
+    }
+  }
+}
+EOF
+
+nginx -c /tmp/nginx-test.conf &
+NGINX_PID=$!
+echo "nginx PID: $NGINX_PID"
+```
+
+Verify nginx is listening:
+
+```sh
+curl -s http://localhost:8787/
+# Expected:  EPL engagement platform: tunnel ok
+
+curl -s http://localhost:8787/health
+# Expected:  {"status":"ok","origin":"devcontainer"}
+```
+
+---
+
+### 5. Start cloudflared
+
+```sh
+# Inside the devcontainer
+cloudflared tunnel --config /etc/cloudflared/config.yml run &
+CLOUDFLARED_PID=$!
+echo "cloudflared PID: $CLOUDFLARED_PID"
+```
+
+Watch the startup output. After a few seconds you should see:
+
+```
+...INF Connection ... registered connIndex=0 ...
+...INF Connection ... registered connIndex=1 ...
+...INF Registered tunnel connection ...
+```
+
+At least two connections to the Cloudflare edge should register. Four connections are
+normal and indicate full redundancy.
+
+Check the tunnel status from a separate devcontainer terminal:
+
+```sh
+cloudflared tunnel --config /etc/cloudflared/config.yml info
+```
+
+Expected (abbreviated):
+
+```
+Tunnel ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+Status:    HEALTHY
+Connections: [4]
+```
+
+---
+
+### 6. Verify the public URL
+
+From your laptop (outside the devcontainer), curl the public URL:
+
+```sh
+# Replace with your student subdomain
+curl -sv https://api.${STUDENT}.eplabs.cloud/
+# Expected HTTP status: 200
+# Expected body: EPL engagement platform: tunnel ok
+```
+
+Also verify the health endpoint:
+
+```sh
+curl -s https://api.${STUDENT}.eplabs.cloud/health
+# Expected: {"status":"ok","origin":"devcontainer"}
+```
+
+If you get a `525 SSL Handshake Error` or similar Cloudflare error page, the tunnel
+connection may still be establishing. Wait 10–15 seconds and retry.
+
+If you get a `404` (from cloudflared's catchall rule), the hostname in the ingress rule
+does not match the URL you are requesting. Double-check the config and that the CNAME
+record was created.
+
+---
+
+### 7. Install cloudflared as a persistent service
+
+Running cloudflared in the background with `&` is fine for the lab, but the tunnel will
+stop when you exit the devcontainer session. Install it as a procd init service so it
+survives container restarts:
+
+```sh
+# Inside the devcontainer — install the service definition
+cloudflared service install
+
+# Start and enable
+/etc/init.d/cloudflared enable
+/etc/init.d/cloudflared start
+/etc/init.d/cloudflared status
+```
+
+Expected output from `status`:
+
+```
+running
+```
+
+Verify the tunnel is still connected:
+
+```sh
+cloudflared tunnel --config /etc/cloudflared/config.yml info
+```
+
+If `service install` does not work in the OpenWrt environment (procd integration may
+behave differently in the container vs bare metal), use the manual background approach
+and add a `CMD` or entrypoint script to restart cloudflared on container start. The
+instructor can show the procd init script pattern if needed.
+
+---
+
+### 8. Record the cloudflared version to build-manifest.json
+
+```sh
+# From the devcontainer or laptop
+MANIFEST="labs/output/build-manifest.json"
+CF_VERSION=$(docker exec ep-devcontainer cloudflared --version 2>&1 | awk '{print $3}' | head -1)
+
+# If the manifest doesn't exist yet, create a minimal stub
+if [ ! -f "$MANIFEST" ]; then
+  mkdir -p labs/output
+  printf '{"role":"engagement-platform","openwrt_version":"23.05.3","created_at":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MANIFEST"
+fi
+
+UPDATED=$(jq --arg v "$CF_VERSION" '. + {cloudflared_version: $v}' "$MANIFEST")
+printf '%s\n' "$UPDATED" > "$MANIFEST"
+
+echo "cloudflared_version recorded: $CF_VERSION"
+cat "$MANIFEST"
+```
+
+The manifest now contains `"cloudflared_version": "2024.10.0"`.
+
+---
+
+## Post-state
+
+When this lab is complete, the following must all be true:
+
+- [ ] `cloudflared tunnel --config /etc/cloudflared/config.yml info` shows `HEALTHY` and
+  at least one registered connection.
+- [ ] `curl https://api.<student>.eplabs.cloud/` returns HTTP 200 with the nginx body.
+- [ ] `curl https://api.<student>.eplabs.cloud/health` returns JSON `{"status":"ok",...}`.
+- [ ] `cloudflared` is running as a service in the devcontainer (survives container
+  restart).
+- [ ] `labs/output/build-manifest.json` contains `"cloudflared_version": "2024.10.0"`.
+- [ ] The tunnel credential JSON lives in `/etc/cloudflared/` on the named volume
+  (`epl-cloudflared`) and will persist across container rebuilds.
+
+**What CF Access does NOT do yet:** the tunnel is publicly accessible — anyone who knows
+the URL can hit it. Lab 08 adds Cloudflare Access in front, enforcing JWT or service
+token authentication. For now, the open URL is intentional so you can verify the tunnel
+without authentication complexity.
+
+---
+
+## Validation
+
+Run `validate.sh` from the repo root:
+
+```sh
+bash courses/engagement-platform-labs/labs/lab06-cloudflare-tunnel/validate.sh
+```
+
+Or via the Makefile:
+
+```sh
+cd courses/engagement-platform-labs/labs
+make validate-lab06-cloudflare-tunnel
+```
+
+Before running:
+
+```sh
+chmod +x courses/engagement-platform-labs/labs/lab06-cloudflare-tunnel/validate.sh
+```
+
+The script reads `STUDENT` from the environment:
+
+```sh
+export STUDENT=yourname
+bash courses/engagement-platform-labs/labs/lab06-cloudflare-tunnel/validate.sh
+```
+
+The script:
+1. Curls `https://api.<student>.eplabs.cloud/` and asserts HTTP 200.
+2. Curls `/health` and asserts JSON body contains `"status":"ok"`.
+3. Checks `cloudflared tunnel info` inside the devcontainer and asserts status is
+   `HEALTHY`.
+4. Asserts `labs/output/build-manifest.json` contains `cloudflared_version`.
+5. Optionally checks that CF Access enforcement is NOT yet present (asserts the public
+   URL is accessible without auth headers — Lab 08 will flip this expectation).
+
+---
+
+## Troubleshooting
+
+<details>
+<summary>curl to public URL returns 502 or "tunnel not found"</summary>
+
+The CNAME record may not have propagated yet, or the tunnel may not be running.
+
+```sh
+# Check DNS is resolving to the tunnel
+dig CNAME api.${STUDENT}.eplabs.cloud +short
+# Expected: <tunnel-id>.cfargotunnel.com.
+
+# Check cloudflared is running inside the devcontainer
+docker exec ep-devcontainer cloudflared tunnel --config /etc/cloudflared/config.yml info
+```
+
+If DNS is fine but the tunnel shows unhealthy, restart cloudflared:
+
+```sh
+docker exec ep-devcontainer /etc/init.d/cloudflared restart
+```
+
+</details>
+
+<details>
+<summary>cloudflared fails to authenticate: "failed to unmarshal tunnel credentials"</summary>
+
+The credential JSON file is either missing or malformed. Re-download it from the
+Cloudflare dashboard (Tunnels > your tunnel > Connectors > Download credentials JSON)
+and re-copy it to the devcontainer.
+
+The file path must exactly match the `credentials-file:` value in `config.yml`. Use
+the full UUID-named path: `/etc/cloudflared/<tunnel-id>.json`.
+
+</details>
+
+<details>
+<summary>nginx on port 8787 returns "connection refused"</summary>
+
+nginx may not have started, or it may have started on the wrong port. Check:
+
+```sh
+docker exec ep-devcontainer netstat -tlnp 2>/dev/null | grep 8787
+# or
+docker exec ep-devcontainer ss -tlnp | grep 8787
+```
+
+If nothing is listening, start nginx again:
+
+```sh
+docker exec ep-devcontainer nginx -c /tmp/nginx-test.conf
+```
+
+If nginx is running but cloudflared returns 502, verify the ingress rule uses
+`http://localhost:8787` (not `https`; nginx is not running TLS here).
+
+</details>
+
+<details>
+<summary>cloudflared service install fails in the OpenWrt container</summary>
+
+The `cloudflared service install` command tries to write to `/etc/init.d/cloudflared`.
+In the devcontainer, the init system is procd (same as bare OpenWrt), but procd may
+not be running as PID 1 — VS Code devcontainers typically have a shim as PID 1.
+
+If `service install` fails, create the init script manually:
+
+```sh
+cat > /etc/init.d/cloudflared << 'EOF'
+#!/bin/sh /etc/rc.common
+START=99
+STOP=01
+
+start() {
+    cloudflared tunnel --config /etc/cloudflared/config.yml run \
+        >> /var/log/cloudflared.log 2>&1 &
+    echo $! > /var/run/cloudflared.pid
+}
+
+stop() {
+    kill $(cat /var/run/cloudflared.pid 2>/dev/null) 2>/dev/null || true
+}
+EOF
+chmod +x /etc/init.d/cloudflared
+/etc/init.d/cloudflared enable
+/etc/init.d/cloudflared start
+```
+
+</details>
+
+<details>
+<summary>The tunnel connects but I get a Cloudflare 1033 "tunneled virtual network" error</summary>
+
+This usually means the tunnel was created in a "private network" routing mode rather
+than a public hostname mode. Verify:
+
+1. In the Cloudflare dashboard, navigate to your tunnel > **Public Hostnames** tab.
+2. Confirm `api.<student>.eplabs.cloud` is listed as a public hostname pointing to
+   `http://localhost:8787`.
+3. If it is not there, add it via the dashboard (or the `cloudflared tunnel route dns`
+   command from step 3 of this lab).
+
+</details>
+
+---
+
+## Next: Lab 07 replaces the nginx placeholder
+
+Lab 07 deploys a Cloudflare Worker to `api.<student>.eplabs.cloud`. The Worker
+replaces the nginx placeholder service — **the tunnel itself does not change**. Lab 07
+will:
+
+1. Deploy the Worker via `wrangler` with the route `api.<student>.eplabs.cloud/*`.
+2. Cloudflare routes public requests to the Worker at the edge; the tunnel will still
+   be available for Worker→origin callbacks in later labs.
+3. Stop nginx on port 8787 (the tunnel still runs but the route is now served by the
+   Worker, not the tunnel ingress).
+
+Understanding this transition is important: the Worker IS the API surface for Labs
+07–14. The tunnel provides the outbound path for the Worker to call back into the
+devcontainer when needed.
+
+---
+
+## Take-home extension
+
+**Pin the cloudflared SHA256 at Dockerfile build time**
+
+The devcontainer Dockerfile currently fetches cloudflared with:
+
+```dockerfile
+ARG CLOUDFLARED_VERSION=2024.10.0
+ARG CLOUDFLARED_SHA=PLACEHOLDER_PIN_AT_BUILD_TIME
+RUN curl -fsSL -o /usr/sbin/cloudflared \
+      "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
+ && chmod +x /usr/sbin/cloudflared
+```
+
+To harden this, replace `PLACEHOLDER_PIN_AT_BUILD_TIME` with the real SHA256 and add a
+verification step:
+
+```dockerfile
+RUN curl -fsSL -o /usr/sbin/cloudflared \
+      "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" \
+ && printf '%s  /usr/sbin/cloudflared\n' "${CLOUDFLARED_SHA}" | sha256sum -c - \
+ && chmod +x /usr/sbin/cloudflared \
+ && /usr/sbin/cloudflared --version
+```
+
+To get the real SHA256 for `2024.10.0`:
+
+```sh
+curl -fsSL https://github.com/cloudflare/cloudflared/releases/download/2024.10.0/cloudflared-linux-amd64 \
+  | sha256sum
+```
+
+Commit the SHA into the Dockerfile so rebuilds fail loudly if Cloudflare publishes a
+different binary at the same version tag (unlikely, but a valid supply-chain check).
+
+**cloudflared on the Mango (MIPS, installed in Lab 03)**
+
+The Mango uses `cloudflared-linux-mipsle` — the MIPS little-endian binary from the
+same GitHub release. Lab 03 installs it onto the ExtRoot. The version should match the
+devcontainer's pinned version (`2024.10.0`). To verify:
+
+```sh
+ssh root@192.168.8.1 'cloudflared --version'
+# Expected: cloudflared version 2024.10.0
+```
+
+The Mango's cloudflared is not used as a tunnel origin in this workshop (the devcontainer
+is the origin). The Mango binary exists in case a future exercise needs to run a local
+proxy or health-check endpoint from the drop device. Lab 13 and Lab 14 use the
+Mango's tailnet connectivity (not its cloudflared) to communicate with the Worker.

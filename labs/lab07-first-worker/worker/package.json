@@ -1,0 +1,17 @@
+{
+  "name": "fleet-gateway",
+  "version": "1.0.0",
+  "description": "EPL engagement platform Worker — fleet gateway",
+  "main": "src/index.js",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

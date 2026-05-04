@@ -1,0 +1,4 @@
+# Lab 08 output — service token credentials
+# These files contain secrets and must not be committed.
+*
+!.gitignore

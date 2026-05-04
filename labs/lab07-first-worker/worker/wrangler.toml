@@ -1,0 +1,48 @@
+name = "fleet-gateway"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+# Replace YOUR_DOMAIN with your actual domain before deploying.
+# Run: sed -i "s/YOUR_DOMAIN/${DOMAIN}/g" wrangler.toml
+routes = [
+    { pattern = "api.YOUR_DOMAIN/v1/*",    zone_name = "YOUR_DOMAIN" },
+    { pattern = "api.YOUR_DOMAIN/relay/*", zone_name = "YOUR_DOMAIN" }
+]
+
+[vars]
+ENVIRONMENT = "development"
+WORKER_VERSION = "1.0.0"
+# Lab 13 — set to your second tunnel hostname (add DNS CNAME + ingress rule in cloudflared-config.yml)
+RELAY_BACKEND = "https://app.YOUR_DOMAIN"
+
+# Secrets — set with wrangler secret put (do NOT put values in this file):
+#   wrangler secret put DISCORD_PUBLIC_KEY    # Lab 11: Discord app Ed25519 pubkey
+#   wrangler secret put DISCORD_WEBHOOK_URL   # Lab 14: webhook URL for pcap delivery
+
+# ---------------------------------------------------------------------------
+# D1 database binding — uncommented in Lab 09.
+# 1. Create the database:   wrangler d1 create fleet-database
+# 2. Copy the database_id from the output into the line below.
+# 3. Apply the schema:      bash labs/lab09-d1-database/migrate.sh
+# ---------------------------------------------------------------------------
+[[d1_databases]]
+binding       = "FLEET_DB"
+database_name = "fleet-database"
+database_id   = "YOUR_D1_DATABASE_ID"
+
+# ---------------------------------------------------------------------------
+# KV namespace binding — uncommented in Lab 10.
+# 1. Create the namespace:  wrangler kv:namespace create RATE_LIMITS
+# 2. Copy the id from the output into the line below.
+# ---------------------------------------------------------------------------
+[[kv_namespaces]]
+binding = "RATE_LIMITS"
+id      = "YOUR_KV_NAMESPACE_ID"
+
+# ---------------------------------------------------------------------------
+# R2 bucket binding — uncommented in Lab 10.
+# 1. Create the bucket:     wrangler r2 bucket create artifacts-bucket
+# ---------------------------------------------------------------------------
+[[r2_buckets]]
+binding     = "ARTIFACTS"
+bucket_name = "artifacts-bucket"

@@ -1,0 +1,723 @@
+# Lab 01 — Hardware Familiarization & Recovery
+
+**Duration: 60 minutes**
+
+You have two pieces of hardware in front of you: a GL.iNet Mango (GL-MT300N-V2) running
+OpenWrt on a 16MB NOR flash chip, and a VS Code devcontainer running the same OpenWrt
+23.05.3 userland on your laptop. By the end of this lab you will have SSH'd into both,
+attached a serial console to the Mango, and exercised both software-level (failsafe)
+and bootloader-level (`u-boot_mod` HTTP) recovery paths.
+
+The core lesson: **you can break OpenWrt and recover it**. Failsafe mode, U-Boot HTTP
+recovery (`u-boot_mod`), and serial console are not emergency last resorts — they are
+normal tools. Practice them before you need them.
+
+> **Order matters here.** Serial console is set up in Step 3, *before* the recovery
+> exercises in Steps 6 and 7. Both recovery exercises rely on serial being attached.
+> Do not skip ahead.
+
+---
+
+## Learning objectives
+
+- Navigate the Mango hardware: ports, reset button, testpoints, USB.
+- Attach the serial console to the Mango (TP1–TP4) and observe boot.
+- SSH into both platforms (Mango and devcontainer) and recognize that OpenWrt is
+  OpenWrt regardless of the container/embedded boundary.
+  <!-- Stock GL.iNet firmware (factory default) uses 192.168.8.1 / goodlife.
+       Pre-flashed pure OpenWrt uses 192.168.1.1 with empty root password.
+       Both paths are documented in Step 2; this is the authoritative source. -->
+- Execute OpenWrt failsafe deliberately (wrong config + recover via serial).
+- Understand `u-boot_mod` HTTP recovery (entry threshold, form metadata, no actual reflash).
+- Know the UART pinout and connection parameters cold.
+
+---
+
+## Pre-state
+
+Before starting this lab confirm all of the following.
+
+**Software on your laptop:**
+
+```sh
+# Docker is running
+docker info | grep -E '^Server Version'
+
+# A serial terminal client is installed (any one of these works)
+command -v screen || command -v picocom || command -v minicom || command -v tio || \
+    echo "Install one: sudo apt install screen  (or picocom / tio)"
+
+# The EPL devcontainer image is available, OR Lab 02 hasn't run yet — fallback
+# to the upstream rootfs in Step 4b is fine.
+docker images | grep -E 'epl-engagement-platform|openwrt/rootfs'
+```
+
+**Hardware on the bench (per student):**
+
+- 1× GL.iNet Mango (GL-MT300N-V2) with DC power.
+- 1× Ethernet cable, laptop ↔ Mango **LAN (black)** port.
+- 1× **3.3V** USB-to-UART adapter (FTDI, CP2102, CH340, etc.). **NOT a 5V adapter
+  — 5V will damage the Mango PCB.**
+- 4× dupont wires or probe clips.
+- USB drive (16GB+, ext4-formattable) — used from Lab 03 onward; not strictly
+  needed in Lab 01 but bring it.
+
+**Network reachability:**
+
+```sh
+# Stock GL.iNet firmware default LAN is 192.168.8.1.
+# If your Mango was pre-flashed with pure upstream OpenWrt, try 192.168.1.1.
+ping -c 3 192.168.8.1
+```
+
+**One-time setup after a fresh `git clone`:**
+
+```sh
+chmod +x courses/engagement-platform-labs/labs/lab01-hardware-familiarization/validate.sh
+```
+
+> **NetworkManager users (most modern Linux distros):** during Step 7 (HTTP recovery)
+> you'll need to assign a static `192.168.1.2/24` to your Ethernet interface while
+> the Mango's OpenWrt DHCP server is offline. NetworkManager will fight you on this.
+> Be ready to run:
+>
+> ```sh
+> sudo nmcli device disconnect enp2s0       # substitute your interface name
+> sudo ip addr add 192.168.1.2/24 dev enp2s0
+> sudo ip link set enp2s0 up
+> # ...do recovery work...
+> sudo nmcli device connect enp2s0           # restore at end of step
+> ```
+
+---
+
+## Walkthrough
+
+### 1. Physical Mango inspection
+
+Power on the Mango and examine it while it boots.
+
+**Ports (approximate — exact arrangement varies by hardware revision; verify against
+your unit):**
+
+- USB-A port (typically on the side) — ExtRoot drive lives here in later labs.
+- Reset button (recessed) — held at power-on for ≥5s, triggers `u-boot_mod` HTTP
+  recovery (Step 7). Note: reset is **not** used for OpenWrt failsafe; failsafe is
+  entered via serial keystroke (Step 6).
+- WAN (orange port) — uplink to existing network.
+- LAN (black port) — direct device connection to your laptop.
+- DC barrel jack — 5V/1A power input.
+
+**LED sequence during stock boot (approximate; verify against your firmware):**
+
+```
+White, flashing quickly  → U-Boot / early kernel
+White, flashing slowly   → OpenWrt init running
+White, solid             → Normal operation
+```
+
+We use the serial output as the authoritative timing reference in later steps —
+LED cadence is a useful at-a-glance signal but not the ground truth.
+
+**Dimensions:** 58 mm × 58 mm × 22 mm, weight ~43 g. It fits in a coat pocket.
+This is intentional for the drop-device role it plays from Lab 03 onward.
+
+**GPIO testpoints (used for serial in Step 3):** TP1–TP4 on the PCB near the SoC.
+We'll connect to these in Step 3 — locate them visually now.
+
+---
+
+### 2. Boot stock Mango firmware and verify SSH
+
+Connect your laptop's Ethernet port to the **LAN (black)** port on the Mango.
+Set your laptop's Ethernet interface to DHCP (or static `192.168.8.2/24`).
+
+**Verify basic access (stock GL.iNet firmware — the factory default students receive):**
+
+```sh
+# Admin UI (GL.iNet stock web interface)
+# Open in browser: http://192.168.8.1
+
+# SSH — stock GL.iNet firmware has SSH enabled on LAN by default
+ssh root@192.168.8.1
+# Default password: goodlife  (printed on device label)
+```
+
+> **Note — pre-flashed / pure OpenWrt units.** If your Mango was previously flashed with
+> upstream OpenWrt (e.g., an instructor's reference unit, or a self-paced student who
+> already ran Lab 02), the defaults differ:
+>
+> - LAN IP: `192.168.1.1` (not `192.168.8.1`)
+> - Root password: **empty** on first SSH (no GL.iNet `goodlife` default). Set one
+>   immediately with `passwd`, OR install your SSH pubkey via:
+>   ```sh
+>   mkdir -p /etc/dropbear && chmod 700 /etc/dropbear
+>   echo "$(cat ~/.ssh/id_ed25519.pub)" >> /etc/dropbear/authorized_keys
+>   chmod 600 /etc/dropbear/authorized_keys
+>   ```
+> - Substitute `192.168.1.1` for `192.168.8.1` in every command in this lab.
+> - This is the **authoritative source** for the `MANGO_HOST` env var; the Validation
+>   section just refers back here.
+>
+> The rest of this lab assumes stock GL.iNet defaults; switch IPs/credentials as
+> appropriate if you are on a pre-flashed unit.
+
+**Keep this SSH session open through Step 5.** We'll re-use it for the side-by-side
+comparison.
+
+Once connected, gather system facts:
+
+```sh
+# What firmware are we on?
+cat /etc/openwrt_release
+# Stock GL.iNet (older, double-quoted):
+#   DISTRIB_ID="OpenWrt"
+#   DISTRIB_RELEASE="..."
+# Pure upstream OpenWrt 23.05+ (single-quoted):
+#   DISTRIB_ID='OpenWrt'
+#   DISTRIB_RELEASE='23.05.x'
+# Both forms are accepted by validate.sh.
+
+# CPU and flash
+cat /proc/cpuinfo | grep -E 'machine|system type'
+cat /proc/mtd
+
+# Memory
+free -m
+
+# Package count varies by firmware: stock GL.iNet ~150-200, pure OpenWrt ~140
+opkg list-installed | wc -l
+```
+
+**Key observation:** note the `DISTRIB_TARGET` field. It will say `ramips/mt76x8`.
+That same target string is the foundation for both the Mango drop firmware
+(NOR-constrained) and the devcontainer engagement platform you'll build in Lab 02.
+
+---
+
+### 3. Attach the serial console
+
+Serial gives you direct UART access to U-Boot and the kernel — earlier than any
+network or OpenWrt init. We attach it now because **Step 6 (failsafe) and Step 7
+(HTTP recovery) both depend on serial being present**. If you skip this step, you
+will not be able to complete the recovery exercises.
+
+**Connection parameters:**
+
+```
+Baud rate:    115200
+Data bits:    8
+Parity:       None
+Stop bits:    1
+Flow control: None
+```
+
+**Verified UART pinout on the GL-MT300N-V2 PCB (TP1–TP4 testpoints):**
+
+```
+TP1 — 3.3V   (do NOT connect to your adapter's VCC unless the adapter requires it;
+              typical USB-UART adapters self-power and TP1 should be left floating)
+TP2 — GND    → adapter GND
+TP3 — TX     → adapter RX  (this is what the Mango sends)
+TP4 — RX     → adapter TX  (this is what the Mango receives)
+```
+
+> **Verified 2026-05-03** on instructor's GL-MT300N-V2 reference unit by bidirectional
+> serial confirmed at 115200 8N1. U-Boot, kernel, and OpenWrt login output all
+> visible on TP3. If silk-screen labels on a particular unit are unclear, confirm GND
+> with a multimeter (TP2 rings to the DC barrel jack ground ring) and identify TX
+> activity during boot with a logic probe. Do NOT guess — incorrect connections can
+> damage the device or adapter.
+
+**Connect:**
+
+```sh
+# Linux: identify your USB-to-UART adapter device
+ls /dev/ttyUSB* /dev/ttyACM*
+# Likely /dev/ttyUSB0 (FTDI/CP210x/CH340) or /dev/ttyACM0
+
+# Attach with logging (so we can replay U-Boot / kernel output later if needed).
+# screen's -L flag enables logging to the file specified by -Logfile.
+screen -L -Logfile /tmp/mango-serial.log /dev/ttyUSB0 115200
+
+# Alternatives: picocom (cleaner exit handling)  OR  tio (modern, log-friendly)
+#   picocom -b 115200 /dev/ttyUSB0
+#   tio --log /tmp/mango-serial.log -b 115200 /dev/ttyUSB0
+
+# macOS
+#   screen /dev/cu.usbserial-* 115200
+```
+
+> **screen exit:** Ctrl+A then K then Y. **screen detach** (session keeps running):
+> Ctrl+A then D, reattach with `screen -r`. **Permission denied on /dev/ttyUSB0:**
+> add yourself to the `dialout` group and re-login, or `sudo` the command for the
+> workshop.
+
+**Power-cycle the Mango with serial attached.** You will see U-Boot messages, the
+kernel boot sequence, and the OpenWrt login prompt — all over the serial line.
+Notable lines to watch for (we'll reference these in Steps 6 and 7):
+
+- `RESET button is pressed for: 0 second(s)` — U-Boot polling the reset line
+- `Autobooting in: 2 s (type 'gl' to run U-Boot console)` — 2-second U-Boot interrupt window
+- `Press the [f] key and hit [enter] to enter failsafe mode` — OpenWrt failsafe entry banner (~10s wall-clock from power-on)
+
+If you see all three of these, your serial is working. Press Enter at the OpenWrt
+login prompt to confirm bidirectional input works.
+
+---
+
+### 4. The devcontainer as soft hardware
+
+The VS Code devcontainer runs the same OpenWrt 23.05.3 rootfs, just on x86-64 with no
+flash constraint. From the shell prompt, the two environments are indistinguishable
+except for target architecture and available storage.
+
+#### 4a. Open in VS Code (recommended path)
+
+1. Open VS Code in the course root:
+   ```sh
+   code /path/to/engagement-platform-labs
+   ```
+2. VS Code detects `.devcontainer/devcontainer.json` and prompts:
+   **"Reopen in Container"** — click it.
+3. The container starts. Open a new terminal (`Ctrl+backtick`).
+4. You are now inside the OpenWrt rootfs:
+   ```sh
+   cat /etc/openwrt_release
+   # DISTRIB_ID='OpenWrt'      (single-quoted — upstream 23.05.3 format)
+   # DISTRIB_TARGET='x86/64'   (the devcontainer is x86/64; the Mango is ramips/mt76x8)
+   ```
+
+The container name is `ep-devcontainer` (set by `--name` and matched by `--hostname` in
+`.devcontainer/devcontainer.json`). Subsequent labs refer to it by that name when
+running `docker exec` from your host.
+
+#### 4b. Bare docker run (fallback — no VS Code required)
+
+If VS Code is not available or the devcontainer image hasn't been built yet, run the
+upstream OpenWrt rootfs directly **in detached mode**. This keeps the container
+running through Step 5 and validation, regardless of whether you have a shell into it:
+
+```sh
+docker run -d --rm \
+    --name ep-devcontainer \
+    --hostname ep-devcontainer \
+    --cap-add=NET_ADMIN \
+    --device=/dev/net/tun \
+    openwrt/rootfs:x86-64-23.05.3 \
+    /bin/sh -c 'mkdir -p /var/lock /var/run /var/log; tail -f /dev/null'
+
+# Open a shell into it for the rest of the lab:
+docker exec -it ep-devcontainer /bin/sh
+```
+
+> **Why detached:** the foreground `-it` variant exits the container the moment you
+> exit the shell, which would break Step 5 and validation. Detached + `tail -f` keeps
+> PID 1 alive; you `docker exec` to enter and exit shells freely.
+
+Once inside:
+
+```sh
+cat /etc/openwrt_release
+opkg update
+opkg list-installed | wc -l
+```
+
+**Teaching moment:** compare the package counts between the Mango (stock GL.iNet
+firmware, hundreds of packages) and this bare rootfs (~30 packages). In Lab 02 you
+will build both to your exact specification from the same ImageBuilder baseline.
+
+---
+
+### 5. Compare the two environments side by side
+
+Use the SSH session you opened in Step 2, plus a new `docker exec` shell:
+
+```sh
+# Terminal 1: Mango  (the SSH from Step 2)
+ssh root@192.168.8.1
+
+# Terminal 2: devcontainer
+docker exec -it ep-devcontainer /bin/sh
+```
+
+Run the same commands in both and note the differences:
+
+```sh
+# Architecture
+uname -m
+# Mango: mips (or mipsel)   |  devcontainer: x86_64
+
+# Storage layout
+df -h
+# Mango: /rom is ~3.5MB squashfs (read-only) + / is ~10MB overlayfs (writable)
+# Devcontainer: / is the host's filesystem (effectively unbounded — TBs)
+
+# OpenWrt version
+cat /etc/openwrt_release | grep DISTRIB_RELEASE
+# Both should land on 23.05.x by Lab 02 (this Lab 01 unit may still be 23.05.0
+# pending Lab 02 sysupgrade — that's expected).
+
+# UCI config system
+uci show network
+# Both have identical UCI syntax and semantics
+```
+
+The key observation for later labs: **UCI, opkg, /etc/init.d, procd — identical**. A
+uci-defaults enrollment script written for the Mango runs unmodified in the devcontainer.
+The container/embedded contrast is architectural, not operational.
+
+---
+
+### 6. Recovery method 1 — OpenWrt failsafe via serial
+
+Failsafe mode bypasses all custom OpenWrt configuration and drops the device into a
+minimal shell. Use it when a bad config locks you out of the OS — wrong LAN IP, lost
+root password, broken `/etc/init.d/network`. The OS still boots; it's the running
+configuration that's wrong.
+
+> **Important:** failsafe is entered over **the serial console** (UART) you attached
+> in Step 3, NOT by holding the reset button. The reset-at-boot mechanism does
+> something completely different on this hardware (Step 7 — HTTP recovery in
+> `u-boot_mod`).
+
+**Trigger a recoverable problem first (deliberate misconfig exercise):**
+
+```sh
+# In your Step 2 SSH session into the Mango:
+# Break the LAN IP so the laptop can no longer reach the Mango
+uci set network.lan.ipaddr='10.99.99.1'
+uci commit network
+/etc/init.d/network restart
+# SSH drops — expected. Network access to the Mango is now dead.
+```
+
+> **Without serial attached, this is a brick.** This exercise depends on the Step 3
+> serial console working. If you're not yet attached over UART, stop and complete
+> Step 3 first.
+
+**Enter failsafe over serial:**
+
+1. Power-cycle the Mango (unplug + replug DC). **Do not touch the reset button.**
+2. Watch your serial terminal. The Linux kernel boots, then OpenWrt's `procd` prints:
+   ```
+   Press the [f] key and hit [enter] to enter failsafe mode
+   Press the [1], [2], [3] or [4] key and hit [enter] to select the debug level
+   ```
+   On a GL-MT300N-V2 this banner appears at kernel `t≈6.5s`, roughly 10 seconds of
+   wall-clock time after power is applied.
+3. Within ~2.5 seconds (before `mount_root: switching to jffs2 overlay` prints), type
+   `f` followed by Enter in your serial terminal.
+4. The boot diverges: instead of the OpenWrt banner you land at a `root@(none):/#`
+   prompt. The `(none)` hostname is the tell — you are in failsafe.
+
+**Repair the configuration:**
+
+```sh
+# Mount the overlay so config edits persist
+mount_root
+
+# Fix the broken config
+uci set network.lan.ipaddr='192.168.1.1'   # or 192.168.8.1 for stock GL.iNet
+uci commit network
+
+# Hard reboot back to normal mode
+reboot -f
+```
+
+After the reboot, the Mango will go through a normal boot sequence and reach the
+OpenWrt login prompt. From your laptop, verify SSH works again:
+
+```sh
+ping -c 3 192.168.1.1
+ssh root@192.168.1.1
+```
+
+**Why this works:** OpenWrt's procd reads keystrokes from the kernel console (which
+is the UART) for ~2.5s after `procd: - early -`. Pressing `f` flips procd into a
+failsafe init path that mounts only the read-only squashfs and skips
+`/etc/init.d/*`, `/etc/uci-defaults/*`, and the overlay. Failsafe typically also
+configures eth0 with `192.168.1.1/24` and starts a telnet listener — that's why some
+guides describe a network-only failsafe path. With serial in hand the network access
+isn't required, and we don't exercise it here.
+
+<!-- The network failsafe (telnet to 192.168.1.1) is documented in upstream OpenWrt
+     but was not exercised during the 2026-05-03 walkthrough. Serial entry was
+     verified end-to-end. If the network failsafe path needs to be a teaching point,
+     instructor should verify on the workshop's exact firmware. -->
+
+---
+
+### 7. Recovery method 2 — U-Boot HTTP recovery (`u-boot_mod`)
+
+When the OS is so broken it won't boot at all — for example after a failed sysupgrade
+or a corrupted kernel — failsafe is unreachable because no kernel is running. The next
+recovery layer lives in the bootloader. The Mango ships with **[`u-boot_mod`][ubm]**, a
+community-maintained U-Boot fork for Ralink/MediaTek SoCs that embeds an **HTTP
+recovery server** with a browser upload form.
+
+[ubm]: https://github.com/pepe2k/u-boot_mod
+
+> **This is `u-boot_mod`, not vendor stock U-Boot.** GL.iNet ships `u-boot_mod` on
+> most of their MT7628-class devices: Mango (MT300N-V2), Slate (AR300M), Creta
+> (AR750), AR150, USB150, etc. The recovery form HTML literally credits
+> `https://github.com/pepe2k/u-boot_mod`. Mainline OpenWrt's bootloader recovery on
+> devices without `u-boot_mod` is typically **TFTP** (UDP/69), not HTTP. Verified
+> 2026-05-03 on a GL-MT300N-V2 running pure OpenWrt 23.05.
+
+**Trigger U-Boot HTTP recovery:**
+
+1. Power off the Mango (unplug DC).
+2. Set your laptop's Ethernet interface to a static `192.168.1.2/24` (the U-Boot HTTP
+   server lives at `192.168.1.1`):
+   ```sh
+   # NetworkManager users — release management before assigning manually
+   sudo nmcli device disconnect enp2s0      # substitute your interface
+
+   # Linux
+   sudo ip addr add 192.168.1.2/24 dev enp2s0
+   sudo ip link set enp2s0 up
+
+   # macOS
+   sudo ifconfig en0 192.168.1.2 netmask 255.255.255.0
+   ```
+3. Press and **hold** the recessed reset button.
+4. While holding reset, plug power back in.
+5. Continue holding for **at least 5 seconds** (verified threshold). U-Boot counts the
+   hold time and prints it on serial:
+   ```
+   RESET button is pressed for:  5 second(s)
+   NetLoopHttpd, call eth_halt!
+   HTTP server is starting at IP: 192.168.1.1
+   HTTP server is ready!
+   ```
+6. Release the reset button. The HTTP server is now running, autoboot is suppressed,
+   and OpenWrt is NOT booting. The device sits in U-Boot until you upload a firmware
+   image or power-cycle.
+
+**Verify the recovery server from your laptop:**
+
+```sh
+# Confirm 200 OK and pull the upload form
+curl -sS -o /tmp/recovery.html http://192.168.1.1/ && head -3 /tmp/recovery.html
+
+# Or open in a browser:
+xdg-open http://192.168.1.1/    # Linux
+open http://192.168.1.1/         # macOS
+```
+
+The form metadata (verified):
+
+```html
+<title>Firmware update</title>
+<form method="post" enctype="multipart/form-data">
+  <input type="file" name="firmware">
+  <input type="submit" value="Update firmware">
+</form>
+```
+
+- Action: POST to `/`
+- Field name: `firmware`
+- Server-side validation: **none** — `u-boot_mod` writes whatever bytes you POST into
+  the firmware partition. Choose your image carefully.
+- Browser-free upload (useful in Lab 12 for scripted flashing):
+  ```sh
+  curl -F 'firmware=@openwrt-23.05.3-ramips-mt76x8-glinet_gl-mt300n-v2-squashfs-sysupgrade.bin' http://192.168.1.1/
+  ```
+
+**Do not upload anything in this lab.** We are verifying mode entry only — flashing is
+covered in Lab 03 (sysupgrade from a running OS) and Lab 12 (sealed image bake +
+unattended provisioning).
+
+**Exit recovery:** power-cycle the Mango (no button held). It will autoboot to OpenWrt
+normally. After it boots, restore NetworkManager control of the Ethernet interface:
+
+```sh
+sudo ip addr flush dev enp2s0
+sudo nmcli device connect enp2s0
+```
+
+Confirm SSH to the Mango is back via DHCP'd address:
+
+```sh
+ssh root@192.168.8.1   # or 192.168.1.1 for pre-flashed units
+```
+
+#### Threshold map (verified)
+
+| Reset hold duration | U-Boot reports | Action |
+|---------------------|----------------|--------|
+| 0 s (no button) | `0 second(s)` | Normal autoboot |
+| ~3 s | `< 5 second(s)` | "RESET button wasn't pressed or not long enough" — normal autoboot |
+| ≥5 s | `≥5 second(s)` | HTTP recovery server starts at `192.168.1.1` |
+
+There is also a serial-only path into U-Boot's interactive console: type `gl<Enter>`
+during the 2-second `Autobooting in: 2 s` countdown. That drops you to the U-Boot
+prompt where you can run `printenv`, `tftpboot`, `bootm`, etc. The 2-second window is
+human-tight; spam-typing `gl<Enter>` repeatedly while the device boots improves
+reliability. Worth knowing exists; not the canonical recovery path.
+
+#### GL.iNet HTTP vs mainline TFTP — for general knowledge
+
+| Aspect | Mainline OpenWrt U-Boot (e.g. some Belkin, RPi) | `u-boot_mod` (Mango and most GL.iNet MT7628-class devices) |
+|--------|---|---|
+| Recovery protocol | TFTP (UDP/69) | HTTP (TCP/80) |
+| Host setup | `tftpd-hpa` running, file in `/srv/tftp/` | Just a browser, or `curl -F` |
+| Trigger | Varies by device (button, console interrupt) | Reset held at power-on for ≥5 s |
+| Default device IP | Varies | `192.168.1.1` |
+| Upload mechanism | TFTP `get` from device side | HTTP POST from host |
+
+If you encounter a non-GL.iNet OpenWrt device in the field, consult the OpenWrt wiki
+page for that specific model — recovery semantics are determined by the vendor U-Boot,
+not by OpenWrt itself.
+
+---
+
+## Post-state
+
+When this lab is complete you should be able to answer yes to all of the following:
+
+- [ ] `ssh root@192.168.8.1` connects and shows the Mango shell prompt.
+      <!-- 192.168.1.1 for pre-flashed pure-OpenWrt units; see Step 2 note. -->
+- [ ] `cat /etc/openwrt_release` on the Mango shows `DISTRIB_ID="OpenWrt"` (or
+      `'OpenWrt'` on 23.05+ units — single quotes; both accepted by validate.sh).
+- [ ] `docker exec ep-devcontainer cat /etc/openwrt_release` shows the same `DISTRIB_ID`.
+- [ ] You attached the serial console (Step 3) and observed U-Boot, kernel, and
+      OpenWrt login output.
+- [ ] You successfully broke and recovered the Mango via failsafe mode (Step 6).
+- [ ] You confirmed `u-boot_mod` HTTP recovery is reachable (`HTTP server is starting
+      at IP: 192.168.1.1` printed on serial after a ≥5s reset-button-hold; the upload
+      form rendered when browsed at `http://192.168.1.1/`).
+- [ ] You know the four testpoint labels on the Mango PCB and the correct UART parameters.
+
+---
+
+## Validation
+
+Run `validate.sh` from the lab directory:
+
+```sh
+bash courses/engagement-platform-labs/labs/lab01-hardware-familiarization/validate.sh
+```
+
+Or via the Makefile:
+
+```sh
+cd courses/engagement-platform-labs/labs
+make validate-lab01-hardware-familiarization
+```
+
+The script exits `0` on success and prints the first failing assertion on failure.
+
+**What the script checks:**
+
+1. SSH into the Mango at `$MANGO_HOST` succeeds and `/etc/openwrt_release` contains
+   `DISTRIB_ID="OpenWrt"` or `DISTRIB_ID='OpenWrt'` (either quote style is accepted).
+2. `docker exec ep-devcontainer cat /etc/openwrt_release` succeeds and contains the
+   same `DISTRIB_ID`.
+
+**Pre-flashed pure-OpenWrt Mangos:** override the IP per the Step 2 note —
+`MANGO_HOST=192.168.1.1 ./validate.sh`.
+
+---
+
+## Take-home extension
+
+See [`take-home/README.md`](take-home/README.md) for a pointer to the MT3000 tour content.
+
+---
+
+## Troubleshooting
+
+<details>
+<summary>Cannot reach 192.168.8.1 (or 192.168.1.1 on pre-flashed units)</summary>
+
+- Confirm your Ethernet cable is in the **LAN** (black) port, not the WAN (orange) port.
+- Check that your laptop's Ethernet interface received a DHCP address in the matching
+  range — `192.168.8.0/24` for stock GL.iNet, `192.168.1.0/24` for pure OpenWrt.
+  Use `ip addr show` (Linux) or `ifconfig` (macOS).
+- If you got a DHCP address in the *other* range (e.g. you're on `192.168.1.x` but the
+  Mango is at `192.168.8.1`), the cable is likely in the WAN port — Ethernet traffic
+  is reaching your home/office router, not the Mango. Move it to LAN.
+- If your interface is static, set it to `192.168.8.2/24` (stock) or `192.168.1.2/24`
+  (pre-flashed) manually.
+- Check that the Mango LED is solid white (normal operation). If it is off or blinking
+  abnormally, power cycle the device.
+- Last resort — recover via Step 6 (failsafe over serial) or Step 7 (`u-boot_mod`
+  HTTP recovery via reset-button-hold ≥5s).
+
+</details>
+
+<details>
+<summary>SSH connection refused on the Mango</summary>
+
+- Stock GL.iNet firmware enables SSH by default on LAN. If it was disabled, navigate to
+  the admin UI at `http://192.168.8.1`, go to **System → Advanced → SSH Access**, and
+  enable it.
+- The default root password on stock GL.iNet firmware is printed on the device label
+  (usually `goodlife`). If the password was changed, reset via failsafe mode (Step 6).
+- Pure-OpenWrt units have **no** root password set on first SSH; if SSH refuses with
+  "Permission denied (publickey)", the unit's dropbear is configured key-only —
+  enter via serial and either run `passwd` or install your pubkey per the Step 2 note.
+
+</details>
+
+<details>
+<summary>No /dev/ttyUSB* device after plugging in the UART adapter</summary>
+
+- Run `dmesg | tail -20` immediately after plugging in. You should see a USB
+  enumeration line and a `cdc_acm`, `ftdi_sio`, `cp210x`, or `ch341` driver
+  attaching. If nothing appears, the adapter may be incompatible (or unplugged).
+- The `/dev/ttyUSB0` numbering can shift if you have multiple serial-USB devices.
+  Check `dmesg` for the actual device path assigned.
+- If the device exists but `screen` says "Permission denied", you're not in the
+  `dialout` group. `sudo screen ...` works for one-off, or `sudo usermod -aG dialout
+  $USER && newgrp dialout` for permanent.
+
+</details>
+
+<details>
+<summary>Failsafe mode not triggering (serial entry — Step 6)</summary>
+
+- Failsafe is entered over **serial**, not by holding the reset button. The reset
+  button at power-on triggers `u-boot_mod` HTTP recovery (Step 7), which is a
+  different recovery layer.
+- Watch your serial terminal for the line `Press the [f] key and hit [enter] to enter
+  failsafe mode`. It appears at kernel `t≈6.5s` (~10s of wall-clock from power-on).
+- The window before procd commits the boot is ~2.5 seconds. If you miss it, the
+  OpenWrt login prompt prints normally — power-cycle and try again.
+- The failsafe shell prompt is `root@(none):/#`. The `(none)` hostname is the tell.
+- Run `mount_root` once inside failsafe to gain access to `/etc/config/*` for repair.
+
+</details>
+
+<details>
+<summary>u-boot_mod HTTP recovery not triggering (Step 7)</summary>
+
+- Hold the reset button **before** applying power, and keep holding for at least
+  5 seconds after the LED comes on.
+- Confirm via serial: U-Boot prints `RESET button is pressed for: N second(s)`. If
+  N is `< 5` you didn't hold long enough; if N is `0` the button isn't being
+  registered (cable in wrong port, button stuck, etc.).
+- Once `HTTP server is starting at IP: 192.168.1.1` prints, set your laptop static
+  IP to `192.168.1.2/24` (NetworkManager users: `sudo nmcli device disconnect
+  enp2s0` first to keep it from clobbering the static address with DHCP retries).
+- Browse to `http://192.168.1.1/` — you should see the firmware-update form.
+
+</details>
+
+<details>
+<summary>docker exec ep-devcontainer: container not found</summary>
+
+- The devcontainer must be running. If you used VS Code "Reopen in Container," it should
+  be running. Verify with: `docker ps | grep ep-devcontainer`
+- If you used the Step 4b fallback in foreground (`-it`) mode, the container exited
+  when you exited the shell. **Re-run the Step 4b command using `-d` (detached) mode
+  as documented**, then `docker exec -it ep-devcontainer /bin/sh` for shells.
+- The container must be named `ep-devcontainer` for `validate.sh` to find it.
+
+</details>
+
+<!-- The original TFTP troubleshooting block was removed when Step 7 was rewritten to
+     describe u-boot_mod HTTP recovery (the actual Mango behavior). TFTP is not used
+     by this hardware. The HTTP recovery troubleshooting block above replaces it. -->

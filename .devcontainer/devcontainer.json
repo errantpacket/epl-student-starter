@@ -1,0 +1,47 @@
+{
+  "name": "EPL Engagement Platform (OpenWrt 23.05.3)",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "runArgs": [
+    "--cap-add=NET_ADMIN",
+    "--cap-add=SYS_MODULE",
+    "--device=/dev/net/tun",
+    "--hostname=ep-devcontainer"
+  ],
+  "mounts": [
+    "source=epl-tailscale,target=/var/lib/tailscale,type=volume",
+    "source=epl-cloudflared,target=/etc/cloudflared,type=volume"
+  ],
+  "remoteUser": "root",
+  "workspaceFolder": "/workspaces/engagement-platform-labs",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/engagement-platform-labs,type=bind,consistency=cached",
+  "postCreateCommand": "/workspaces/engagement-platform-labs/.devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-docker",
+        "ms-vscode.makefile-tools",
+        "redhat.vscode-yaml",
+        "cloudflare.cloudflare-workers-bindings"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "terminal.integrated.profiles.linux": {
+          "bash": {
+            "path": "/bin/bash"
+          },
+          "ash (OpenWrt)": {
+            "path": "/bin/ash"
+          }
+        }
+      }
+    }
+  },
+  "containerEnv": {
+    "EPL_ROLE": "engagement-platform",
+    "EPL_OPENWRT_VERSION": "23.05.3",
+    "EPL_TARGET": "ramips/mt76x8"
+  }
+}

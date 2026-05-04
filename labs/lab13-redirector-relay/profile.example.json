@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "comment": "Workshop malleable C2 profile — simplified Oblique-Relay subset.",
+  "user_agent_pattern": "EPL-Implant/1.0",
+  "required_header": {
+    "name": "X-EPL-Profile",
+    "value": "epl-relay-alpha-2024"
+  },
+  "allowed_paths": [
+    "/relay/update",
+    "/relay/stage",
+    "/relay/beacon",
+    "/relay/data"
+  ],
+  "backend": "https://app.YOUR_DOMAIN",
+  "decoy_status": 200,
+  "log_ua_bytes": 32
+}
