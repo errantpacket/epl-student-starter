@@ -5,16 +5,31 @@ duration: "60 minutes"
 day: "Day 1, Session 1"
 hardwareRequired: true
 codespaces: "partial"
-widgets: ["HardwareProfileToggle", "ResetButtonHoldVisualizer", "ValidateOutputPaster", "MarkCompleteButton", "ViewSource"]
+widgets: ["HardwareProfileToggle", "EnvironmentToggle", "LabProgress", "EnvBlock", "ResetButtonHoldVisualizer", "ValidateOutputPaster", "MarkCompleteButton", "ViewSource"]
 ---
 
 import HardwareProfileToggle from '@widgets/HardwareProfileToggle.svelte';
+import EnvironmentToggle from '@widgets/EnvironmentToggle.svelte';
+import LabProgress from '@widgets/LabProgress.svelte';
+import EnvBlock from '@widgets/EnvBlock.astro';
 import ResetButtonHoldVisualizer from '@widgets/ResetButtonHoldVisualizer.svelte';
 import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
 import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
 import ViewSource from '@widgets/ViewSource.svelte';
 
 <HardwareProfileToggle client:load />
+<EnvironmentToggle client:load />
+
+<LabProgress lab="lab01" client:load steps={[
+  { id: 'inspect',     label: '1. Physical Mango inspection' },
+  { id: 'ssh',         label: '2. Boot stock Mango firmware and verify SSH' },
+  { id: 'serial',      label: '3. Attach the serial console' },
+  { id: 'devcontainer', label: '4. The devcontainer as soft hardware' },
+  { id: 'compare',     label: '5. Compare the two environments side by side' },
+  { id: 'failsafe',    label: '6. Recovery method 1 — OpenWrt failsafe via serial' },
+  { id: 'recovery',    label: '7. Recovery method 2 — U-Boot HTTP recovery' },
+  { id: 'validate',    label: 'Run validation' },
+]} />
 
 # Lab 01 — Hardware Familiarization & Recovery
 
@@ -91,7 +106,10 @@ command -v screen || command -v picocom || command -v minicom || command -v tio 
 command -v ssh
 ```
 
-**Operator console — pick one:**
+**Operator console — pick one** (use the *Environment* toggle at the top of
+this page to filter the rest of the lab to your chosen path):
+
+<EnvBlock env="local-dev">
 
 - **Local Dev Container** (recommended for the full course). Install
   [Docker Desktop][docker-desktop] (or [Podman Desktop][podman-desktop] —
@@ -99,11 +117,21 @@ command -v ssh
   extension][devc-ext]. Open this repo in VS Code and click "Reopen in
   Container." First build is ~3-5 min; the pre-pulled OpenWrt rootfs
   sibling image takes ~15 MB on top.
+
+</EnvBlock>
+
+<EnvBlock env="codespace">
+
 - **GitHub Codespace** (zero local install). Click **"Open in Codespaces"**
   on the lab page or visit
   [`codespaces.new/errantpacket/epl-student-starter`][cs-link]. The free
   [personal Codespaces tier][cs-pricing] (120 core-hours/month) is more
   than enough for this workshop. No Docker needed on your laptop.
+
+</EnvBlock>
+
+<EnvBlock env="minimal-local">
+
 - **Minimal local — Lab 01 only** (just docker, no VS Code, no devcontainer).
   Lab 01 only needs the OpenWrt rootfs sibling. If you don't want to install
   the Dev Containers extension or build the full operator console yet, the
@@ -118,14 +146,17 @@ command -v ssh
   # Validate.sh and `docker exec ep-devcontainer ...` work the same.
   ```
 
+</EnvBlock>
+
 [docker-desktop]: https://www.docker.com/products/docker-desktop/
 [podman-desktop]: https://podman-desktop.io/
 [devc-ext]: https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers
 [cs-link]: https://codespaces.new/errantpacket/epl-student-starter
 [cs-pricing]: https://docs.github.com/en/billing/managing-billing-for-github-codespaces/about-billing-for-github-codespaces
 
-If you chose **Local Dev Container** or **Codespace**, verify the engagement
-stack inside the operator console:
+<EnvBlock env="codespace,local-dev">
+
+Verify the engagement stack inside the operator console:
 
 ```sh
 # These commands run inside the operator console (Debian shell), not on your laptop:
@@ -135,12 +166,17 @@ wrangler --version
 docker images openwrt/rootfs   # sibling image, pre-pulled by post-create.sh
 ```
 
-If you chose **Minimal local**, only verify the rootfs is present on your
-laptop's Docker daemon:
+</EnvBlock>
+
+<EnvBlock env="minimal-local">
+
+Verify the rootfs is present on your laptop's Docker daemon:
 
 ```sh
 docker images openwrt/rootfs    # should show the x86-64-23.05.3 tag
 ```
+
+</EnvBlock>
 
 **Hardware on the bench (per student):**
 
@@ -255,11 +291,15 @@ ssh root@<span data-profile-ip>192.168.8.1</span>
 **Keep this SSH session open through Step 5.** We'll re-use it for the side-by-side
 comparison.
 
+<EnvBlock env="codespace">
+
 > **Codespace users:** SSH to the Mango must be from your **laptop** terminal, not
 > from the Codespace. The Mango lives on your local LAN (`192.168.8.0/24` or
 > `192.168.1.0/24`); the Codespace is a remote VM that can't see it directly.
 > Lab 05 puts the Mango on a Tailscale tailnet — once that's done, the Codespace
 > *can* reach the Mango by tailnet hostname. For Lab 01, just use the laptop.
+
+</EnvBlock>
 
 Once connected, gather system facts:
 
@@ -403,10 +443,14 @@ From a shell prompt, the OpenWrt sibling is indistinguishable from the Mango
 except for target architecture and available storage. UCI, opkg, /etc/init.d,
 [procd][procd-wiki] — identical. **The OS is the OS.**
 
+<EnvBlock env="minimal-local">
+
 > **Minimal-local students:** Step 4a (operator console attach) doesn't apply
 > to you — there's no Debian outer to attach to. Skip ahead to **Step 4b**;
 > the `docker run` invocation there is your entry point. Everything from
 > Step 4b onward is identical regardless of which pre-state path you took.
+
+</EnvBlock>
 
 > **Background reading.** The [Dev Containers specification][devcontainers-spec]
 > is what `devcontainer.json` conforms to — the same file works for VS Code
@@ -420,6 +464,8 @@ except for target architecture and available storage. UCI, opkg, /etc/init.d,
 [cs-docs]: https://docs.github.com/en/codespaces/overview
 
 #### 4a. Open in VS Code (or Codespaces)
+
+<EnvBlock env="local-dev">
 
 Local Dev Containers:
 
@@ -440,11 +486,17 @@ Local Dev Containers:
    wrangler --version
    ```
 
+</EnvBlock>
+
+<EnvBlock env="codespace">
+
 Codespaces (one-click, no local Docker required):
 
 > Click **Open in Codespaces** on the lab page header (or
 > [`codespaces.new/errantpacket/epl-student-starter`](https://codespaces.new/errantpacket/epl-student-starter)).
 > The same Dockerfile builds; vscode-server runs natively on Debian.
+
+</EnvBlock>
 
 #### 4b. Launch the OpenWrt rootfs sibling
 
@@ -565,9 +617,22 @@ architectural, not operational.
 
 ### 6. Recovery method 1 — OpenWrt failsafe via serial
 
+<EnvBlock env="codespace">
+
 > **Bench-only:** this step requires the laptop's serial UART connection from
-> Step 3. Codespace students should run this alongside the laptop terminal — the
-> Codespace can't drive failsafe.
+> Step 3. The Codespace can't drive failsafe; run this from your laptop
+> terminal alongside the Codespace browser tab.
+
+</EnvBlock>
+
+<EnvBlock env="local-dev,minimal-local">
+
+> **Bench-only:** this step requires the laptop's serial UART connection from
+> Step 3. The serial console is host-local hardware — neither the Dev Container
+> nor docker can pass through `/dev/ttyUSB*`, so run this from your laptop's
+> shell directly.
+
+</EnvBlock>
 
 [Failsafe mode][failsafe-wiki] bypasses all custom OpenWrt configuration and
 drops the device into a minimal shell. Use it when a bad config locks you out of
@@ -650,9 +715,21 @@ isn't required, and we don't exercise it here.
 
 ### 7. Recovery method 2 — U-Boot HTTP recovery (`u-boot_mod`)
 
+<EnvBlock env="codespace">
+
 > **Bench-only:** this step assigns a static IP on your laptop's Ethernet
 > interface to talk to the Mango at `192.168.1.1`. The Codespace can't reach
-> the Mango's local LAN.
+> the Mango's local LAN — run this entirely from your laptop terminal.
+
+</EnvBlock>
+
+<EnvBlock env="local-dev,minimal-local">
+
+> **Bench-only:** this step assigns a static IP on your laptop's Ethernet
+> interface to talk to the Mango at `192.168.1.1`. Configure the laptop NIC
+> from the host shell (not from inside Docker / the Dev Container).
+
+</EnvBlock>
 
 When the OS is so broken it won't boot at all — for example after a failed sysupgrade
 or a corrupted kernel — failsafe is unreachable because no kernel is running. The next
