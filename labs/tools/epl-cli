@@ -9,6 +9,7 @@
 #   epl status             Show stored token info (no network)
 #   epl validate <lab>     Run lab validator and POST results to the course site
 #   epl complete <lab>     Manually mark a lab complete
+#   epl uncomplete <lab>   Clear server-side completion for a lab (alias: reset)
 #   epl help               Show this help
 #   epl --version          Print version and exit
 #
@@ -488,6 +489,36 @@ cmd_complete() {
 }
 
 # ---------------------------------------------------------------------------
+# Subcommand: uncomplete <lab>
+# ---------------------------------------------------------------------------
+cmd_uncomplete() {
+    if [ $# -lt 1 ]; then
+        red "Usage: epl uncomplete <lab>" >&2
+        exit 1
+    fi
+    _lab="$1"
+    _token=$(load_token)
+
+    printf 'Unmarking lab %s on %s ...\n' "${_lab}" "${EPL_BASE_URL}"
+
+    _body='{"status":"not-started"}'
+
+    _resp_body=""
+    _resp_code=""
+    epl_curl _resp_body _resp_code \
+        -X POST \
+        -H "Authorization: Bearer ${_token}" \
+        -H "Content-Type: application/json" \
+        -d "${_body}" \
+        "${EPL_BASE_URL}/api/progress/${_lab}" || exit $?
+
+    handle_http_error "${_resp_code}" "${_resp_body}"
+
+    green "Lab ${_lab}: not-started (server-side completion cleared)"
+    printf 'Per-step checkboxes will reset on next page load.\n'
+}
+
+# ---------------------------------------------------------------------------
 # Subcommand: help
 # ---------------------------------------------------------------------------
 cmd_help() {
@@ -512,6 +543,10 @@ SUBCOMMANDS
 
   complete <lab>     Manually mark a lab complete (for hand-graded labs).
                        epl complete lab05-tailscale-mesh
+
+  uncomplete <lab>   Clear server-side completion for a lab (resets the
+                     per-step checklist on next page load).
+                       epl uncomplete lab05-tailscale-mesh
 
   help, --help       Show this message.
 
@@ -563,6 +598,9 @@ case "${_cmd}" in
         ;;
     complete)
         cmd_complete "$@"
+        ;;
+    uncomplete|reset)
+        cmd_uncomplete "$@"
         ;;
     *)
         red "Unknown subcommand: ${_cmd}" >&2
