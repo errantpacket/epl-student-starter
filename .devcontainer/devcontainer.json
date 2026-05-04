@@ -15,9 +15,7 @@
     "source=epl-cloudflared,target=/etc/cloudflared,type=volume"
   ],
   "remoteUser": "root",
-  "workspaceFolder": "/workspaces/engagement-platform-labs",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/engagement-platform-labs,type=bind,consistency=cached",
-  "postCreateCommand": "/workspaces/engagement-platform-labs/.devcontainer/post-create.sh",
+  "postCreateCommand": "${containerWorkspaceFolder}/.devcontainer/post-create.sh",
   "customizations": {
     "vscode": {
       "extensions": [

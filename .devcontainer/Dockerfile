@@ -25,7 +25,7 @@ RUN opkg update \
       ca-bundle ca-certificates curl wget-ssl jq jsonfilter \
       bash openssh-client git \
       python3 python3-pip python3-cryptography \
-      tcpdump nmap socat netcat-openbsd \
+      tcpdump nmap socat \
       iperf3 htop \
       wireguard-tools \
  && rm -rf /tmp/opkg-lists/*
@@ -53,6 +53,6 @@ RUN opkg install nodejs npm \
  && rm -rf /root/.npm /tmp/npm-* /tmp/opkg-lists/*
 
 ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-WORKDIR /workspaces/engagement-platform-labs
+WORKDIR /workspaces
 
 CMD ["sh", "-c", "echo '[EPL] devcontainer ready; PID 1 sleeping. Use VS Code terminal or `docker exec`.'; tail -f /dev/null"]
