@@ -80,6 +80,17 @@ EOF
 
 log "Manifest written to $MANIFEST"
 
+# Make epl-cli available as `epl` on PATH, so docs that say `epl login`
+# work regardless of cwd. Symlink, not copy — picks up edits immediately.
+EPL_CLI_SRC="$WORKSPACE/labs/tools/epl-cli"
+EPL_CLI_DST="/usr/local/bin/epl"
+if [ -x "$EPL_CLI_SRC" ]; then
+    ln -sf "$EPL_CLI_SRC" "$EPL_CLI_DST"
+    log "Symlinked $EPL_CLI_SRC → $EPL_CLI_DST"
+else
+    log "WARN $EPL_CLI_SRC not found or not executable; 'epl' will not be on PATH"
+fi
+
 # Tailscale TUN mode — kernel TUN locally, userspace in Codespaces.
 if [ -n "${CODESPACES:-}" ]; then
     log "Codespaces detected; configuring Tailscale for userspace networking."

@@ -540,7 +540,7 @@ EOF
 # Entry point — dispatch on first argument
 # ---------------------------------------------------------------------------
 _cmd="${1:-help}"
-shift || true   # consume $1; remaining args passed to subcommand
+[ "$#" -gt 0 ] && shift   # consume $1 only if it exists
 
 case "${_cmd}" in
     --version|-V)
