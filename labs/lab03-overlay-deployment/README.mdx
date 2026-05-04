@@ -1,153 +1,302 @@
 ---
-title: "Overlay Deployment, ExtRoot, Persistence"
+title: "Overlay Deployment"
 labNumber: 3
 duration: "60 minutes"
 day: "Day 1, Session 3"
 hardwareRequired: true
-widgets: ["HardwareProfileToggle", "ValidateOutputPaster", "MarkCompleteButton", "ViewSource"]
+codespaces: "partial"
+widgets: ["HardwareProfileToggle", "EnvironmentToggle", "LabProgress", "LabStep", "EnvBlock", "ValidateOutputPaster", "MarkCompleteButton", "ViewSource"]
 ---
 
 import HardwareProfileToggle from '@widgets/HardwareProfileToggle.svelte';
+import EnvironmentToggle from '@widgets/EnvironmentToggle.svelte';
+import LabProgress from '@widgets/LabProgress.svelte';
+import LabStep from '@widgets/LabStep.astro';
+import EnvBlock from '@widgets/EnvBlock.astro';
 import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
 import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
 import ViewSource from '@widgets/ViewSource.svelte';
 
 <HardwareProfileToggle client:load />
+<EnvironmentToggle client:load />
 
-# Lab 03 — Overlay Deployment, ExtRoot, Persistence
+<LabProgress lab="lab03" client:load steps={[
+  { id: 'locate',    label: '1. Locate the Lab 02 build artifact' },
+  { id: 'flash',     label: '2. Flash the Mango with sysupgrade' },
+  { id: 'usb',       label: '3. Identify and partition the USB drive' },
+  { id: 'format',    label: '4. Format the USB as ext4' },
+  { id: 'extroot',   label: '5. Configure ExtRoot (USB as /overlay)' },
+  { id: 'verify',    label: '6. Verify ExtRoot is active' },
+  { id: 'packages',  label: '7. Install packages onto ExtRoot' },
+  { id: 'layout',    label: '8. Check final disk layout' },
+  { id: 'validate',  label: 'Run validation' },
+]} />
 
-**Duration:** 60 minutes
-**Day:** 1, Session 3
+# Lab 03 — Overlay Deployment
+
+**Duration: 60 minutes**
+
+The Mango has 16 MB of NOR flash. A kernel, bootloader, and base system
+together consume most of that. Tailscale, cloudflared, and python3 do not fit
+in the remaining space. ExtRoot is the OpenWrt solution: mount a USB drive as
+the `/overlay` filesystem so every `opkg install` lands on USB rather than NOR.
+
+This lab takes the sysupgrade `.bin` built in Lab 02, flashes it onto the
+Mango, then sets up ExtRoot using UCI fstab. By the end, `tailscale`,
+`cloudflared`, and `python3-light` are installed and reachable from the Mango
+shell. Lab 05 puts Tailscale to work; Lab 06 does the same for cloudflared.
+Both rely on what this lab puts in place.
+
+> **Order matters here.** Step 5 (ExtRoot configuration) must complete and
+> survive a reboot before Step 7 (package installation). If you install
+> packages before ExtRoot is active, they land on NOR and the device may run
+> out of space. Do not skip the reboot in Step 5.
+
+### Where each step runs
+
+This lab is marked **`codespaces: "partial"`** because flashing, USB
+partitioning, and reboot monitoring need physical access to the bench. Once
+the Mango is on the tailnet (Lab 05), the SSH steps in Steps 5 through 8 can
+be driven from any operator console. For this lab, the tailnet is not yet
+established, so all SSH steps originate from your laptop.
+
+| Step | Bench laptop required | Operator console (local Dev Container or Codespace) |
+|------|:---------------------:|:---------------------------------------------------:|
+| 1. Locate artifact      | no  | **yes** (artifact lives in the operator console) |
+| 2. Flash sysupgrade     | yes (Mango is on local LAN) | no |
+| 3. Identify USB         | yes | no |
+| 4. Format ext4          | yes | no |
+| 5. Configure ExtRoot    | yes | no |
+| 6. Verify ExtRoot       | yes | no |
+| 7. Install packages     | yes | no |
+| 8. Check disk layout    | yes | no |
+| Validation              | yes (validate.sh SSHes to Mango) | no (until Lab 05) |
+
+<EnvBlock env="codespace">
+
+> **Codespace users:** keep a laptop terminal open for all Mango SSH steps.
+> The Codespace cannot reach your Mango's local LAN directly. Step 1
+> (locating the artifact) is the only step that runs inside the Codespace.
+> Once Lab 05 connects the Mango to the tailnet, subsequent Mango SSH work
+> can move into the Codespace. For this lab, use the laptop.
+
+</EnvBlock>
 
 ---
 
 ## Learning objectives
 
-- Flash the `drop-v1` Mango firmware produced in Lab 02 via sysupgrade.
-- Break the 16MB NOR flash ceiling by mounting a USB drive as `/overlay` (ExtRoot).
-- Install `tailscale`, `cloudflared`, and `python3-light` post-ExtRoot so they land on USB, not NOR.
-- Understand the devcontainer equivalent: a named Docker volume at `/var/lib/tailscale` solves the same persistence problem without the flash constraint.
-- Verify the post-state with `df -h` and version probes before continuing to Lab 04.
+- Flash a custom OpenWrt sysupgrade image from a running OS using `sysupgrade -n`.
+- Understand the OpenWrt overlay filesystem model: read-only squashfs (NOR) plus
+  a writable upper layer.
+- Configure ExtRoot via `uci fstab` so the upper layer lives on a USB drive
+  rather than in NOR.
+- Install packages that exceed the NOR budget onto the USB overlay.
+- Know where Tailscale and cloudflared state persists on the Mango, and why it
+  survives a power cycle.
 
 ---
 
 ## Pre-state
 
-- Lab 02 completed; `labs/output/` contains the sysupgrade `.bin` for the Mango.
-- Mango is powered on and accessible over SSH at <span data-profile-ip>192.168.8.1</span> (stock or Lab 01 baseline).
-- USB flash drive (16 GB+) in hand; may be blank, FAT32, or ext4 — the lab formats it.
-- Laptop can reach the Mango via USB-C or LAN port (whichever Lab 01 established).
-- Devcontainer is running (used for the parallel contrast section at the end).
+Before starting this lab confirm all of the following.
 
-Smoke check:
+**Artifacts and software:**
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'cat /etc/openwrt_release | grep REVISION'
-# Expected: REVISION="r..."  (any Lab 01/02 baseline is fine here)
+# Lab 02 produced the sysupgrade .bin. Confirm it exists.
+ls courses/engagement-platform-labs/labs/output/*glinet_gl-mt300n-v2*sysupgrade*.bin
+
+# SSH client on your laptop
+command -v ssh
+
+# scp (usually bundled with openssh-client)
+command -v scp
 ```
+
+**Hardware on the bench:**
+
+- Mango powered on, Ethernet to laptop **LAN (black)** port.
+- USB drive (16 GB or larger), not yet plugged into the Mango.
+- The Lab 02 sysupgrade `.bin` produced at
+  `labs/output/openwrt-23.05.3-ramips-mt76x8-glinet_gl-mt300n-v2-squashfs-sysupgrade.bin`.
+
+**Mango is reachable:**
+
+```sh
+# If your Mango is still on stock GL.iNet firmware from Lab 01:
+ping -c 3 192.168.8.1
+
+# If it was already flashed to pure upstream OpenWrt during Lab 01/02:
+ping -c 3 192.168.1.1
+```
+
+After Lab 03's sysupgrade (Step 2), the Mango will boot pure OpenWrt 23.05.3
+at `192.168.1.1`. Substitute that IP for `192.168.8.1` in all commands once
+the flash is complete.
+
+> **Override for validate.sh.** The validator defaults to `MANGO_HOST=192.168.8.1`.
+> After the sysupgrade the Mango listens at `192.168.1.1`. Run validation as:
+> `MANGO_HOST=192.168.1.1 ./validate.sh`
 
 ---
 
 ## Walkthrough
 
-### Step 1 — Locate the build artifact
+<LabStep lab="lab03" id="locate" num={1} title="Locate the Lab 02 build artifact">
 
-From your laptop, inside the repo:
+The sysupgrade `.bin` was produced by `make drop-mango` in Lab 02 and written
+to `labs/output/`. Confirm it is present before copying to the Mango.
 
 ```sh
+# From the course root (or from inside the operator console):
 ls courses/engagement-platform-labs/labs/output/
-# Look for:  openwrt-23.05.3-ramips-mt76x8-glinet_gl-mt300n-v2-squashfs-sysupgrade.bin
+# Look for:
+#   openwrt-23.05.3-ramips-mt76x8-glinet_gl-mt300n-v2-squashfs-sysupgrade.bin
 ```
 
-If the file is absent, run:
+If the file is absent, rebuild it:
 
 ```sh
 cd courses/engagement-platform-labs/labs
 make drop-mango
 ```
 
-Record the path:
+Record the path for the next step:
 
 ```sh
-BIN=$(ls courses/engagement-platform-labs/labs/output/*glinet_gl-mt300n-v2*sysupgrade*.bin | head -1)
+BIN=$(ls courses/engagement-platform-labs/labs/output/*glinet_gl-mt300n-v2*sysupgrade*.bin 2>/dev/null | head -1)
 echo "$BIN"
 ```
 
----
+<EnvBlock env="codespace">
 
-### Step 2 — Flash the Mango with sysupgrade
+The `labs/output/` directory is inside the Codespace filesystem. You can copy
+the `.bin` to your laptop via the VS Code Explorer's right-click "Download"
+option, or via `scp` from the Codespace to your laptop. The flash step (Step 2)
+must run on your laptop.
 
-There are two methods. Use **Method A** unless the Mango is unresponsive.
+</EnvBlock>
 
-#### Method A — scp + sysupgrade (preferred)
+<EnvBlock env="local-dev">
 
-Copy the image to the Mango's RAM and let `sysupgrade` do the rest.
-The `-n` flag discards the existing overlay (desired — we want a clean base).
+The `labs/output/` directory is bind-mounted from your laptop into the Dev
+Container, so the `.bin` is accessible at the same path on both sides. You can
+run the `scp` in Step 2 directly from your laptop using the host path.
+
+</EnvBlock>
+
+<EnvBlock env="minimal-local">
+
+The `labs/output/` directory is on your laptop's filesystem. The `scp` in
+Step 2 runs directly from your laptop shell.
+
+</EnvBlock>
+
+</LabStep>
+
+<LabStep lab="lab03" id="flash" num={2} title="Flash the Mango with sysupgrade">
+
+Flash the Lab 02 image onto the Mango using `sysupgrade -n`. The `-n` flag
+discards the existing overlay (desired for a clean base; any settings from
+Lab 01 or prior experimentation are removed). All commands run from your
+laptop.
+
+> **Bench-only step.** The Mango is on your local LAN. Run these commands
+> from your laptop terminal, not from the operator console.
+
+**Method A: scp + sysupgrade (standard path)**
 
 ```sh
+# Copy the image to Mango RAM. /tmp is a ramdisk; it survives while the
+# Mango is running but is wiped on reboot.
 scp "$BIN" root@<span data-profile-ip>192.168.8.1</span>:/tmp/sysupgrade.bin
+
+# Verify the copy. Both checksums must match before flashing.
+sha256sum "$BIN"
 ssh root@<span data-profile-ip>192.168.8.1</span> 'sha256sum /tmp/sysupgrade.bin'
-# Compare against: sha256sum "$BIN" on your laptop — they must match.
 
+# Flash. The SSH session will drop when sysupgrade kills sshd.
+# That is expected behavior; it confirms flashing started.
 ssh root@<span data-profile-ip>192.168.8.1</span> 'sysupgrade -n /tmp/sysupgrade.bin'
-# The router reboots. SSH session will drop. Wait 90 seconds.
+# Wait 90 seconds for flash + reboot to complete.
 ```
 
-After reboot:
+After the reboot, the Mango runs pure OpenWrt 23.05.3 at `192.168.1.1`
+(upstream default; no GL.iNet overlay). The root password is empty on first
+boot. Set one immediately or install your SSH public key:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'cat /etc/openwrt_release'
-# DISTRIB_REVISION should now reflect the drop-v1 build.
+ssh root@192.168.1.1   # empty password on first connect
+
+# Option A: set a password
+passwd
+
+# Option B: install your SSH public key (then disable password auth)
+mkdir -p /etc/dropbear && chmod 700 /etc/dropbear
+cat >> /etc/dropbear/authorized_keys << 'EOF'
+<paste your ~/.ssh/id_ed25519.pub here>
+EOF
+chmod 600 /etc/dropbear/authorized_keys
 ```
 
-#### Method B — TFTP recovery (fallback)
-
-Use this if Method A fails or the SSH session is unreachable.
-
-1. Hold the Mango's reset button while applying power. Hold for 10 seconds until the LED turns orange.
-2. Set your laptop's LAN interface to `192.168.1.2/24`.
-3. Rename the image file to `recovery.bin` and serve it via TFTP:
+Confirm the firmware version:
 
 ```sh
-cp "$BIN" /tmp/recovery.bin
-# macOS / Linux: any TFTP server works. Simple option:
-#   python3 -m tftpy.TftpServer /tmp 69   (requires pip install tftpy)
-# Or: atftpd, tftpd-hpa, dnsmasq --enable-tftp
+ssh root@192.168.1.1 'cat /etc/openwrt_release'
+# DISTRIB_RELEASE='23.05.3'
+# DISTRIB_TARGET='ramips/mt76x8'
 ```
 
-4. The Mango will pull `recovery.bin` from `192.168.1.1`'s TFTP server and reflash automatically. LED turns solid after success.
-5. Reset laptop network, wait for Mango at `192.168.8.1`.
+**Method B: U-Boot HTTP recovery (fallback)**
 
-**Instructor note:** Verify TFTP binary name expectations for the Mango recovery bootloader before class. The Mango's u-boot may expect a specific filename; check GL.iNet's docs if `recovery.bin` does not work.
+Use this if Method A fails because the Mango is unresponsive over SSH. This
+is the same `u-boot_mod` HTTP recovery path exercised in Lab 01 Step 7.
 
----
+1. Power off the Mango.
+2. Set your laptop's Ethernet interface to a static `192.168.1.2/24`.
+3. Press and hold the reset button.
+4. While holding, plug power back in. Hold for at least 5 seconds.
+5. Serial will print `HTTP server is starting at IP: 192.168.1.1` when ready.
+6. Upload the image:
+   ```sh
+   curl -F "firmware=@${BIN}" http://192.168.1.1/
+   ```
+7. Wait for the Mango to reboot (LED returns to solid white, roughly 90 seconds).
+8. Restore your laptop's Ethernet to DHCP and verify SSH at `192.168.1.1`.
 
-### Step 3 — Identify the USB device
+> **No TFTP on this hardware.** The Mango uses `u-boot_mod` HTTP recovery, not
+> TFTP. Do not set up a TFTP server. See Lab 01 Step 7 for the full explanation.
 
-Plug the USB drive into the Mango's USB port, then:
+</LabStep>
+
+<LabStep lab="lab03" id="usb" num={3} title="Identify and partition the USB drive">
+
+Plug the USB drive into the Mango's USB-A port, then SSH in and run
+`block detect`:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'block detect'
+ssh root@192.168.1.1 'block detect'
 ```
 
-Expected output excerpt:
+Expected output (excerpt):
 
 ```
 config 'device'
     option name 'sda'
-    ...
 
 config 'mount'
     option device '/dev/sda1'
     option target '/mnt/sda1'
-    ...
 ```
 
-If no partition appears (blank drive or unpartitioned), use the raw device (`/dev/sda`). Create a single partition spanning the whole disk:
+If a partition appears (`/dev/sda1`), the drive already has a partition table.
+Proceed to Step 4. If only the raw device (`/dev/sda`) appears with no
+partition, create one now:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> '
-    fdisk /dev/sda <<EOF
+ssh root@192.168.1.1 '
+fdisk /dev/sda <<EOF
 o
 n
 p
@@ -159,21 +308,27 @@ EOF
 '
 ```
 
-Then refresh:
+Refresh the block detection and confirm `/dev/sda1` is listed:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'block detect'
-# /dev/sda1 should now appear
+ssh root@192.168.1.1 'block detect'
 ```
 
----
+> **Why ext4, not FAT32 or exFAT.** OpenWrt's `block-mount` requires a Linux
+> filesystem to handle POSIX permissions and symlinks in the overlay. FAT32
+> and exFAT do not support these, so `mkfs.ext4` is the correct choice for
+> ExtRoot. The `kmod-fs-ext4` and `e2fsprogs` packages were included in the
+> Lab 02 NOR image specifically for this step.
 
-### Step 4 — Format the USB as ext4
+</LabStep>
 
-`e2fsprogs` is baked into the NOR image (it is in the canonical PACKAGES list in `labs/lab02-imagebuilder-firmware/build-drop-mango.sh`):
+<LabStep lab="lab03" id="format" num={4} title="Format the USB as ext4">
+
+`e2fsprogs` is present in the NOR image from Lab 02. Format the partition
+with a label for easy identification:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'mkfs.ext4 -L extroot /dev/sda1'
+ssh root@192.168.1.1 'mkfs.ext4 -L extroot /dev/sda1'
 ```
 
 Expected output (abbreviated):
@@ -184,51 +339,56 @@ Creating filesystem with 3932160 4k blocks ...
 Writing superblocks and filesystem accounting information: done
 ```
 
-If `mkfs.ext4` is not found, the Lab 02 build deviated from the canonical PACKAGES list. Stop here and rebuild with `make drop-mango`.
-
----
-
-### Step 5 — Configure ExtRoot (USB as /overlay)
-
-This is the load-bearing step. The Mango's overlay filesystem expands the effective rootfs from the 16MB NOR into the USB drive. Without this, `tailscale` and `cloudflared` cannot be installed.
-
-Reference: https://openwrt.org/docs/guide-user/additional-software/extroot_configuration
-
-Run the following commands verbatim on the Mango:
+If `mkfs.ext4` is not found, the Lab 02 build did not include `e2fsprogs`.
+Stop and rebuild:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span>
+cd courses/engagement-platform-labs/labs
+make drop-mango
+# Then repeat Step 2 (flash) and return here.
+```
+
+</LabStep>
+
+<LabStep lab="lab03" id="extroot" num={5} title="Configure ExtRoot (USB as /overlay)">
+
+This is the critical step. The UCI `fstab` configuration tells `block-mount`
+to mount `/dev/sda1` as `/overlay` at boot, replacing the NOR overlay with
+the USB filesystem. Without this, the NOR's 16 MB ceiling remains in force.
+
+Reference: [OpenWrt ExtRoot configuration](https://openwrt.org/docs/guide-user/additional-software/extroot_configuration)
+
+SSH into the Mango and run the following sequence:
+
+```sh
+ssh root@192.168.1.1
 ```
 
 Once on the Mango shell:
 
 ```sh
-# Mount the USB temporarily to copy the existing overlay contents
+# Mount the USB temporarily so we can copy the current overlay contents.
+# This preserves any UCI configuration already written to the NOR overlay.
 mkdir -p /mnt/usb
 mount /dev/sda1 /mnt/usb
 
-# Copy the current overlay contents to USB so the router's config is preserved
+# Copy current overlay to USB
 cp -ar /overlay/. /mnt/usb/
 umount /mnt/usb
 
-# Configure block-mount to use /dev/sda1 as the new /overlay
-DEVICE=/dev/sda1
-
-# Remove any existing extroot UCI config to start clean
-uci delete fstab.@mount[0] 2>/dev/null; true
-
-# Read the UUID of the ext4 filesystem
-eval "$(block info $DEVICE | grep -o 'UUID=\S*')"
+# Read the ext4 UUID for the fstab entry. UUID-based mounts survive
+# device enumeration changes (e.g., if a second USB device is added).
+eval "$(block info /dev/sda1 | grep -o 'UUID=\S*')"
 echo "UUID: $UUID"
 
-# Create the UCI mount entry
+# Write the fstab entry
 uci set fstab.extroot=mount
 uci set fstab.extroot.uuid="$UUID"
 uci set fstab.extroot.target="/overlay"
 uci set fstab.extroot.enabled="1"
 uci commit fstab
 
-# Verify the config looks right
+# Verify
 uci show fstab
 ```
 
@@ -241,20 +401,26 @@ fstab.extroot.target='/overlay'
 fstab.extroot.enabled='1'
 ```
 
-Exit the Mango shell and reboot:
+Exit the shell and reboot:
 
 ```sh
 exit
-ssh root@<span data-profile-ip>192.168.8.1</span> 'reboot'
-# Wait 60 seconds for reboot.
+ssh root@192.168.1.1 'reboot'
+# Wait 60 seconds.
 ```
 
----
+**Why UUID and not `/dev/sda1` directly.** If the Mango ever enumerates
+a second USB device before the ExtRoot drive, the block device letter can
+shift (`sda` becomes `sdb`). A UUID mount is unaffected by enumeration order.
 
-### Step 6 — Verify ExtRoot is active
+</LabStep>
+
+<LabStep lab="lab03" id="verify" num={6} title="Verify ExtRoot is active">
+
+After reboot, confirm the USB is mounted as `/overlay`:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'df -h /overlay'
+ssh root@192.168.1.1 'df -h /overlay'
 ```
 
 Expected output:
@@ -264,63 +430,95 @@ Filesystem                Size      Used Available Use% Mounted on
 /dev/sda1                14.9G     28.0K     14.1G   0% /overlay
 ```
 
-The filesystem should be your USB device (not `overlayfs:/overlay` which is the NOR-only view). If you still see the NOR overlay, see the Troubleshooting section.
+The filesystem source must be `/dev/sda1` (or whichever block device your
+USB drive enumerated as), not `overlayfs:/overlay`. The latter indicates NOR
+is still the overlay and ExtRoot did not take effect.
 
-Also check mount source:
+Also check the mount table:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'mount | grep overlay'
-# Should include: /dev/sda1 on /overlay type ext4
+ssh root@192.168.1.1 'mount | grep overlay'
+# Must include a line like:
+# /dev/sda1 on /overlay type ext4 (rw,relatime,...)
 ```
 
----
+If ExtRoot is not active after reboot, see the Troubleshooting section below.
+The most common cause is a UUID mismatch between the `fstab` entry and the
+filesystem created in Step 4.
 
-### Step 7 — Install packages onto ExtRoot
+</LabStep>
 
-With `/overlay` on the USB, the Mango's package space is effectively unlimited for workshop purposes. Install the heavy packages that could not fit in NOR:
+<LabStep lab="lab03" id="packages" num={7} title="Install packages onto ExtRoot">
+
+With `/overlay` on the USB drive, the available package space is limited only
+by the drive size. Install the three packages that could not fit in NOR:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'opkg update && opkg install tailscale cloudflared python3-light'
+ssh root@192.168.1.1 'opkg update && opkg install tailscale python3-light'
 ```
 
-`tailscale` and `python3-light` come from the OpenWrt 23.05.3 package feed.
-`cloudflared` may not be in the 23.05.3 feed for MIPS targets — if the opkg install fails for `cloudflared`, install it manually:
+`tailscale` and `python3-light` are in the OpenWrt 23.05.3 feed for
+`mipsel_24kc`. The feed URL is already correct in the NOR image built by
+Lab 02.
+
+**cloudflared** is not in the OpenWrt package feed for MIPS targets. Install
+the official Cloudflare binary directly:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> '
-    # cloudflared for MIPS32 (mipsel, softfloat) from the Cloudflare release page
-    # Instructor: verify the correct architecture binary before class.
-    # The Mango (ramips/mt76x8) is mipsel-linux-musl.
+ssh root@192.168.1.1 '
     curl -fsSL -o /usr/sbin/cloudflared \
-        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-mipsle"
+        "https://github.com/cloudflare/cloudflared/releases/download/2024.10.0/cloudflared-linux-mipsle"
     chmod +x /usr/sbin/cloudflared
 '
 ```
 
-**Instructor note:** Verify the cloudflared binary for `mipsel` before class. Cloudflare publishes `cloudflared-linux-mipsle` in their GitHub releases. Test that it executes on the Mango. Record the exact version used and update the Wave 2 labs (Lab 06 — Cloudflare Tunnel) with the pinned version.
+> **Pin the cloudflared version.** The command above pins `2024.10.0`, which
+> matches the version baked into the operator console image. Pinning both
+> to the same release makes version comparisons straightforward and avoids
+> protocol drift. Delivery-notes item 2.4 tracks the instructor verification
+> of this binary on real Mango hardware; confirm `cloudflared --version` runs
+> before the workshop.
 
-Verify installations:
-
-```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'tailscale --version'
-# Expected: tailscale ... (version output; exact version depends on feed)
-
-ssh root@<span data-profile-ip>192.168.8.1</span> 'cloudflared --version'
-# Expected: cloudflared version ... (non-empty)
-
-ssh root@<span data-profile-ip>192.168.8.1</span> 'python3 --version'
-# Expected: Python 3.x.y
-```
-
----
-
-### Step 8 — Check final disk layout
+If the direct download fails (network policy, certificate issue), download
+via the operator console and copy across:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'df -h'
+# Inside the operator console:
+curl -fsSL -o /tmp/cloudflared-mipsle \
+    "https://github.com/cloudflare/cloudflared/releases/download/2024.10.0/cloudflared-linux-mipsle"
+
+# From your laptop (after copying out of the operator console if needed):
+scp /tmp/cloudflared-mipsle root@192.168.1.1:/usr/sbin/cloudflared
+ssh root@192.168.1.1 'chmod +x /usr/sbin/cloudflared'
 ```
 
-Expected output excerpt:
+Verify all three installations:
+
+```sh
+ssh root@192.168.1.1 'tailscale --version'
+# tailscale version X.Y.Z go...
+
+ssh root@192.168.1.1 'cloudflared --version'
+# cloudflared version 2024.10.0 ...
+
+ssh root@192.168.1.1 'python3 --version'
+# Python 3.x.y
+```
+
+All three must return non-empty output before proceeding to the Validation
+section.
+
+</LabStep>
+
+<LabStep lab="lab03" id="layout" num={8} title="Check final disk layout">
+
+Run a full `df -h` to confirm the complete storage picture:
+
+```sh
+ssh root@192.168.1.1 'df -h'
+```
+
+Expected output (sizes vary by USB drive):
 
 ```
 Filesystem                Size      Used Available Use% Mounted on
@@ -330,72 +528,105 @@ tmpfs                    61.6M    308.0K     61.3M   1% /tmp
 overlayfs:/overlay       14.9G    120.0M     14.1G   1% /
 ```
 
-The key indicator: `/overlay` is `/dev/sda1` and `/` reports the USB's free space, not the NOR's.
+Key indicators:
 
----
+- `/dev/root` at `/rom` is the read-only squashfs from NOR. It reports 100%
+  used because it is a compressed, read-only image with no free space by
+  design.
+- `/dev/sda1` is at `/overlay`, with gigabytes free.
+- `overlayfs:/overlay` at `/` reports the USB drive's free space, not NOR's.
 
-### Step 9 — Devcontainer contrast (parallel teaching point)
+If `/` still reports only a few MB free, ExtRoot is not active. Return to
+Step 5.
 
-Open a terminal inside the devcontainer (VS Code: `Ctrl+`` → container terminal, or `docker exec -it ep-devcontainer ash`):
+Also confirm Tailscale state will persist across a power cycle:
 
 ```sh
-# In the devcontainer:
-df -h /var/lib/tailscale
-# Expected: the named Docker volume 'epl-tailscale' mounted at /var/lib/tailscale
-
-mount | grep tailscale
-# Shows the Docker volume mount
+ssh root@192.168.1.1 'ls /var/lib/tailscale'
+# Should show state files after a tailscale up (Lab 05); for now,
+# just confirm the directory is writable on the USB overlay.
+ssh root@192.168.1.1 'touch /var/lib/tailscale/.test && rm /var/lib/tailscale/.test && echo writable'
 ```
 
-Compare with the Mango:
+Because `/var/lib/tailscale` is on the overlayfs, which is backed by USB,
+Tailscale state survives power cycles. This is the same persistence guarantee
+a named Docker volume provides to the operator console.
 
-| Problem | Mango solution | Devcontainer solution |
-|---------|---------------|----------------------|
-| Where does Tailscale state persist? | `/var/lib/tailscale` on USB (via `/overlay`) | `/var/lib/tailscale` — named Docker volume `epl-tailscale` |
-| Why not just write to rootfs? | NOR is 16MB, read-only squashfs base | Container restarts lose ephemeral layers |
-| How is the mount configured? | UCI `fstab` entry | `devcontainer.json` `mounts` key |
+| Problem | Mango solution | Operator console solution |
+|---------|---------------|--------------------------|
+| Where does Tailscale state persist? | `/var/lib/tailscale` on USB via `/overlay` | `/var/lib/tailscale` on a named Docker volume (`epl-tailscale`) |
+| Why not write to rootfs directly? | NOR read-only squashfs base; overlay is writable but was NOR-constrained | Container restart wipes ephemeral layers |
+| How is the mount configured? | UCI `fstab` entry (this lab) | `devcontainer.json` `mounts` key |
 
-The devcontainer's `devcontainer.json` shows this directly:
-
-```json
-"mounts": [
-    "source=epl-tailscale,target=/var/lib/tailscale,type=volume",
-    "source=epl-cloudflared,target=/etc/cloudflared,type=volume"
-]
-```
-
-The persistence problem is identical. The hardware constraints differ. Both solutions survive a power cycle.
+</LabStep>
 
 ---
 
 ## Post-state
 
-All of the following must be true before proceeding to Lab 04:
+When this lab is complete you should be able to answer yes to all of the following:
 
-- `df -h /overlay` on the Mango shows `/dev/sda1` (USB), not the NOR overlayfs.
-- `tailscale --version` on the Mango returns a non-empty version string.
-- `cloudflared --version` on the Mango returns a non-empty version string.
-- `/overlay` has at least 10 GB free (confirms the USB is mounted, not a ramdisk).
+- [ ] `cat /etc/openwrt_release` on the Mango shows `DISTRIB_RELEASE='23.05.3'` and
+      `DISTRIB_TARGET='ramips/mt76x8'`.
+- [ ] `df -h /overlay` shows `/dev/sda1` (the USB drive), not `overlayfs:/overlay`.
+- [ ] `mount | grep overlay` shows `type ext4`.
+- [ ] `/overlay` has at least 1 GB free.
+- [ ] `tailscale --version` on the Mango returns a non-empty version string.
+- [ ] `cloudflared --version` on the Mango returns a non-empty version string.
+- [ ] `python3 --version` on the Mango returns a non-empty version string.
 
 ---
 
 ## Validation
 
-Run the provided validator from your laptop:
+Three validation paths. Pick whichever matches your setup. All three call
+the same `validate.sh` and post the result to the same backend; only the
+delivery channel differs.
+
+**Path 1: `epl` CLI** (recommended from the operator console once the tailnet
+is live; see note below).
 
 ```sh
-chmod +x courses/engagement-platform-labs/labs/lab03-overlay-deployment/validate.sh
-courses/engagement-platform-labs/labs/lab03-overlay-deployment/validate.sh
+epl validate lab03-overlay-deployment
+```
+
+The validator SSHes to the Mango at `MANGO_HOST`. In this lab the Mango is not
+yet on the tailnet (that is Lab 05), so the operator console cannot reach it
+directly. Use Path 2 or 3 from your laptop until Lab 05 is complete.
+
+**Path 2: direct script** (bench laptop).
+
+```sh
+MANGO_HOST=192.168.1.1 bash courses/engagement-platform-labs/labs/lab03-overlay-deployment/validate.sh
 ```
 
 Or via the Makefile:
 
 ```sh
 cd courses/engagement-platform-labs/labs
-make validate-lab03-overlay-deployment
+MANGO_HOST=192.168.1.1 make validate-lab03-overlay-deployment
 ```
 
-Exit code 0 = all assertions passed. Any failure prints the failing assertion and exits non-zero.
+The script exits `0` on success and prints the first failing assertion on failure.
+
+**Path 3: paste output into the widget.**
+
+Run `validate.sh` on your laptop, copy the full output, and paste it into the
+widget below. Useful if neither the operator console nor the automated path
+can post to the backend directly.
+
+**What the script checks:**
+
+1. SSH into the Mango at `$MANGO_HOST` succeeds.
+2. `/overlay` is listed in `mount` output with type `ext4` (ExtRoot is active).
+3. `/overlay` has at least 1 GB free (confirms USB drive, not NOR ramdisk).
+4. `tailscale --version` returns a non-empty string.
+5. `cloudflared --version` returns a non-empty string.
+6. `python3 --version` returns a non-empty string.
+
+**Default `MANGO_HOST`.** The script defaults to `192.168.8.1` (stock GL.iNet
+address). After the Lab 03 sysupgrade the Mango is at `192.168.1.1`. Always
+pass `MANGO_HOST=192.168.1.1` explicitly when running this lab's validator.
 
 <ValidateOutputPaster lab="lab03" client:load />
 
@@ -403,11 +634,59 @@ Exit code 0 = all assertions passed. Any failure prints the failing assertion an
 
 ## Take-home extension
 
-See `take-home/lab03-mt3000-emmc/README.md` for the MT3000 variant.
+See [`take-home/lab03-mt3000-emmc/`](take-home/lab03-mt3000-emmc/) for the
+MT3000 variant. The MT3000 carries eMMC storage and has no 16 MB constraint;
+the ExtRoot pattern is unnecessary there. The contrast makes a useful
+architectural discussion: when does ExtRoot make sense and when does it add
+complexity for no benefit?
+
+The take-home directory is a stub during the May 2026 cohort and will be
+expanded post-workshop.
+
+---
+
+## Further reading
+
+**ExtRoot and storage:**
+
+- [OpenWrt ExtRoot configuration](https://openwrt.org/docs/guide-user/additional-software/extroot_configuration).
+  The upstream walkthrough. The UCI commands in Step 5 follow this guide
+  exactly. Worth reading for the explanation of what `block-mount` does
+  and why `cp -ar /overlay/.` is required before rebooting.
+- [UCI fstab configuration](https://openwrt.org/docs/guide-user/storage/fstab).
+  Full reference for all `fstab` UCI options. The `enabled`, `target`, and
+  `uuid` options used in Step 5 are documented here.
+- [opkg package management](https://openwrt.org/docs/guide-user/additional-software/opkg).
+  How `opkg update` and `opkg install` interact with the overlay. After
+  ExtRoot is active, installed packages land on the USB-backed overlay.
+- [USB mass storage troubleshooting](https://openwrt.org/docs/guide-user/storage/usb-drives).
+  What to check if `block detect` shows nothing, or if the drive is not
+  recognized. Covers driver modules (`kmod-usb-storage`, `kmod-usb3`),
+  filesystem modules (`kmod-fs-ext4`), and `block` tool usage.
+
+**Hardware-specific:**
+
+- [GL-MT300N-V2 (Mango) device page](https://openwrt.org/toh/gl.inet/gl-mt300n_v2).
+  Flash layout and partition table. The 16 MB NOR figure and the squashfs +
+  overlay structure are both documented here.
+
+**Workshop-internal:**
+
+- [Lab 02: ImageBuilder Firmware](../lab02-imagebuilder-firmware/). The
+  `.bin` you flash in Step 2 was produced there. The `block-mount`,
+  `kmod-usb-storage`, `kmod-fs-ext4`, and `e2fsprogs` packages in the NOR
+  image are what make this lab possible.
+- [Lab 05: Tailscale mesh](../lab05-tailscale-mesh/). Runs `tailscale up`
+  on the Mango using the binary installed here. After Lab 05, the Mango is
+  on the tailnet and the operator console can reach it by hostname.
+- [Lab 06: Cloudflare Tunnel](../lab06-cloudflare-tunnel/). Uses the
+  `cloudflared` binary installed here to establish the outbound tunnel.
 
 ---
 
 <MarkCompleteButton lab="lab03" client:load />
+
+> View this page's source: [`labs/lab03-overlay-deployment/README.mdx`](https://github.com/errantpacket/OpenWRT_Course/blob/main/courses/engagement-platform-labs/labs/lab03-overlay-deployment/README.mdx)
 
 <ViewSource path="labs/lab03-overlay-deployment/README.mdx" client:visible />
 
@@ -421,66 +700,105 @@ See `take-home/lab03-mt3000-emmc/README.md` for the MT3000 variant.
 Check whether `block-mount` found the UUID:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'block info /dev/sda1'
-# UUID should appear
+ssh root@192.168.1.1 'block info /dev/sda1'
+# The UUID= value here must match what is in fstab.
 
-ssh root@<span data-profile-ip>192.168.8.1</span> 'uci show fstab'
-# Verify fstab.extroot.uuid matches block info output exactly
+ssh root@192.168.1.1 'uci show fstab'
+# Compare fstab.extroot.uuid against the block info output above.
 
-ssh root@<span data-profile-ip>192.168.8.1</span> 'logread | grep -i extroot'
-# Look for mount errors
+ssh root@192.168.1.1 'logread | grep -i extroot'
+# Look for mount errors or "not found" messages.
 ```
 
-Common cause: the UUID in UCI does not match the actual filesystem UUID after formatting.
-Fix: re-run `uci set fstab.extroot.uuid=...` with the correct UUID from `block info`, then `uci commit fstab` and reboot.
+The most common cause is a UUID mismatch: if `mkfs.ext4` was run after the
+`eval "$(block info ...)"` line in Step 5, the UUID in UCI refers to the
+old filesystem. Re-run the `eval` line and the `uci set fstab.extroot.uuid`
+command with the current UUID, then `uci commit fstab` and reboot.
+
+Second common cause: the USB drive is not plugged in. Confirm the drive is
+physically seated in the Mango's USB-A port.
 
 </details>
 
 <details>
 <summary>mkfs.ext4 not found</summary>
 
-`e2fsprogs` is in the canonical PACKAGES list for `build-drop-mango.sh`. If it is missing, the Lab 02 build did not use the canonical list.
+`e2fsprogs` is in the canonical PACKAGES list for `build-drop-mango.sh`. If it
+is missing, the Lab 02 build did not use the canonical list.
 
-Quick fix without rebuilding — install via opkg from NOR (space is tight but e2fsprogs installs temporarily):
+Temporary workaround without rebuilding:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'opkg update && opkg install e2fsprogs'
-# If this fails due to NOR space, rebuild Lab 02 with the canonical list.
+ssh root@192.168.1.1 'opkg update && opkg install e2fsprogs'
+# NOR space is tight; this may fail if other packages consumed the free space.
+# If it fails, rebuild Lab 02 with the canonical list and reflash.
 ```
 
 </details>
 
 <details>
-<summary>opkg install tailscale fails — package not found</summary>
+<summary>opkg install tailscale fails (package not found)</summary>
 
-Confirm the feeds are pointing at 23.05.3:
+Confirm the feed configuration points at 23.05.3:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'cat /etc/opkg/distfeeds.conf'
-# Should reference packages.openwrt.org/releases/23.05.3
+ssh root@192.168.1.1 'cat /etc/opkg/distfeeds.conf'
+# Should reference packages.openwrt.org/releases/23.05.3/mipsel_24kc
 ```
 
-If the feed URL is wrong, this is a build artifact issue; rebuild Lab 02.
+If the feed URL is wrong, the Lab 02 firmware used a different release or
+profile. Rebuild with `make drop-mango` and reflash.
 
-If the feed is correct but the package is absent from the MIPS feed, install tailscale manually:
-https://pkgs.openwrt.org/23.05.3/mipsel_24kc/base/
+If the feed is correct but `tailscale` is absent from the index, check the
+package search directly:
+```sh
+ssh root@192.168.1.1 'opkg list | grep ^tailscale'
+```
+
+As a fallback, download the `.ipk` from the feed mirror and install manually:
+
+```sh
+# https://pkgs.openwrt.org/23.05.3/mipsel_24kc/base/
+# Find the tailscale ipk, download it, scp to Mango, then:
+ssh root@192.168.1.1 'opkg install /tmp/tailscale*.ipk'
+```
 
 </details>
 
 <details>
-<summary>cloudflared not available for MIPS</summary>
+<summary>cloudflared --version returns error (binary not executable or wrong architecture)</summary>
 
-Cloudflare's official mipsel binary is `cloudflared-linux-mipsle`. If the Mango's architecture is `mipsel_24kc` (soft-float), use the `mipsle` binary. If the download fails at runtime, fetch it from the devcontainer and scp it across:
+The Mango (ramips/mt76x8) is `mipsel_24kc` (MIPS little-endian, soft-float).
+The correct Cloudflare release binary is `cloudflared-linux-mipsle`.
+
+Verify the binary is executable and check the error:
 
 ```sh
-# In devcontainer: download the mipsle binary for the Mango
-curl -fsSL -o /tmp/cloudflared-mipsle \
-    "https://github.com/cloudflare/cloudflared/releases/download/2024.10.0/cloudflared-linux-mipsle"
+ssh root@192.168.1.1 'file /usr/sbin/cloudflared 2>/dev/null || echo "file not found"'
+ssh root@192.168.1.1 '/usr/sbin/cloudflared --version 2>&1 | head -3'
+```
 
-# On laptop:
-scp root@ep-devcontainer:/tmp/cloudflared-mipsle /tmp/
-scp /tmp/cloudflared-mipsle root@<span data-profile-ip>192.168.8.1</span>:/usr/sbin/cloudflared
-ssh root@<span data-profile-ip>192.168.8.1</span> 'chmod +x /usr/sbin/cloudflared && cloudflared --version'
+If the binary reports "Exec format error", it is the wrong architecture. Re-download
+`cloudflared-linux-mipsle` (not `mips64` or `arm64`).
+
+If the download step failed silently, the file may be an HTTP error page rather
+than the binary:
+
+```sh
+ssh root@192.168.1.1 'head -c 4 /usr/sbin/cloudflared | od -c'
+# A valid ELF binary starts with \177 E L F
+# An HTML error page starts with < h t m l
+```
+
+If it is HTML, re-run the curl command in Step 7 and check for HTTP errors:
+
+```sh
+ssh root@192.168.1.1 '
+    curl -fSL -o /usr/sbin/cloudflared \
+        "https://github.com/cloudflare/cloudflared/releases/download/2024.10.0/cloudflared-linux-mipsle"
+    # -f fails on HTTP errors; -S shows the error
+    chmod +x /usr/sbin/cloudflared
+'
 ```
 
 </details>
@@ -488,6 +806,28 @@ ssh root@<span data-profile-ip>192.168.8.1</span> 'chmod +x /usr/sbin/cloudflare
 <details>
 <summary>sysupgrade drops SSH connection immediately</summary>
 
-Expected. `sysupgrade` sends SIGTERM to all processes including the SSH daemon before writing flash. The connection drop confirms it started. Wait 90 seconds and reconnect.
+Expected. `sysupgrade` sends SIGTERM to all processes, including sshd, before
+writing to flash. The connection drop confirms the process started. Wait 90
+seconds and reconnect at `192.168.1.1` (not `192.168.8.1`; the new firmware
+uses the upstream OpenWrt default).
+
+</details>
+
+<details>
+<summary>SHA256 mismatch after scp to Mango</summary>
+
+Do not proceed with flashing if the checksums differ. The transfer was
+corrupted. Remove the partial file and re-copy:
+
+```sh
+ssh root@<span data-profile-ip>192.168.8.1</span> 'rm /tmp/sysupgrade.bin'
+scp "$BIN" root@<span data-profile-ip>192.168.8.1</span>:/tmp/sysupgrade.bin
+sha256sum "$BIN"
+ssh root@<span data-profile-ip>192.168.8.1</span> 'sha256sum /tmp/sysupgrade.bin'
+```
+
+If the mismatch persists, check available RAM on the Mango (`free -m`); `/tmp`
+is a ramdisk, and a large image on a lightly-loaded device should have room.
+If `/tmp` is full, reboot the Mango first to clear it.
 
 </details>

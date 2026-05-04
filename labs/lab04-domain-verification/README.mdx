@@ -1,267 +1,510 @@
 ---
-title: "Domain & Cloudflare Verification"
+title: "Domain Verification"
 labNumber: 4
-duration: "15 minutes"
+duration: "30 minutes"
 day: "Day 1, Session 4"
 hardwareRequired: false
-widgets: ["ValidateOutputPaster", "MarkCompleteButton"]
+codespaces: "supported"
+widgets: ["EnvironmentToggle", "LabProgress", "LabStep", "EnvBlock", "ValidateOutputPaster", "MarkCompleteButton", "ViewSource"]
 ---
 
+import EnvironmentToggle from '@widgets/EnvironmentToggle.svelte';
+import LabProgress from '@widgets/LabProgress.svelte';
+import LabStep from '@widgets/LabStep.astro';
+import EnvBlock from '@widgets/EnvBlock.astro';
 import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
 import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
+import ViewSource from '@widgets/ViewSource.svelte';
 
-# Lab 04 — Domain & Cloudflare Verification
+<EnvironmentToggle client:load />
 
-**Duration:** 15 minutes
-**Day:** 1, Session 4
+<LabProgress lab="lab04" client:load steps={[
+  { id: 'wrangler-auth',   label: '1. Authenticate wrangler' },
+  { id: 'dns-resolve',     label: '2. Verify the workshop subdomain resolves' },
+  { id: 'dns-records',     label: '3. Create the required DNS records' },
+  { id: 'entitlements',    label: '4. Confirm D1, KV, R2, and Access entitlements' },
+  { id: 'smoke-test',      label: '5. Smoke-test the CF proxy' },
+  { id: 'validate',        label: 'Run validation' },
+]} />
 
-> **Hardware-agnostic.** This lab runs entirely on the student's laptop. No router, no devcontainer, no USB required. All you need is a browser and a terminal with `dig` and `curl` available.
+# Lab 04 — Domain Verification
+
+**Duration: 30 minutes**
+
+This lab has no bench component. The Mango is not involved. Everything runs
+on the operator console (the Debian shell inside your Dev Container or
+Codespace) using the `wrangler` CLI that was pre-installed there.
+
+The goal is to confirm that three things are ready before Day 2:
+
+1. Your Cloudflare account is authenticated from the operator console (`wrangler login`).
+2. Your workshop subdomain under `eplabs.cloud` (or your own domain) has the DNS
+   records the later labs expect: a wildcard proxied `A` record for Worker routing
+   and a non-proxied `test.` record for DNS-control verification.
+3. The Cloudflare services that Day 2 deploys (D1, KV, R2, Access) are available
+   under your account.
+
+Labs 06 (Cloudflare Tunnel) and 07 (First Worker) deploy services bound to your
+subdomain. Lab 08 (Cloudflare Access) gates those services with OTP-enforced access.
+Getting the domain baseline right here prevents half a dozen hard-to-diagnose
+failures later.
+
+> **Subdomain assignment.** Each student receives a per-student subdomain under
+> `eplabs.cloud`, provisioned by the instructor before the workshop per
+> `instructor/dns_delegation_setup_guide.md`. Your subdomain is printed on your
+> student assignment card. If you are using your own domain that is already
+> active in Cloudflare, substitute it wherever `eplabs.cloud` appears.
+
+### Where each step runs
+
+This lab is pure cloud. Every command runs inside the operator console.
+
+| Step | Operator console |
+|------|:----------------:|
+| 1. Authenticate wrangler | yes |
+| 2. Verify subdomain resolves | yes |
+| 3. Create required DNS records | yes (via dashboard or wrangler API) |
+| 4. Confirm entitlements | yes |
+| 5. Smoke-test CF proxy | yes |
+| Validation | yes |
 
 ---
 
 ## Learning objectives
 
-- Verify that your Cloudflare account has an active site (workshop subdomain or own domain).
-- Confirm DNS delegation is working and required workshop DNS records resolve.
-- Validate that Workers, D1, R2, and Zero Trust services are accessible in your account.
-- Confirm `wrangler` CLI is authenticated and can see your account.
+- Authenticate `wrangler` from the operator console and verify account identity.
+- Confirm DNS delegation for the workshop subdomain is active.
+- Create the wildcard proxied `A` record and the `test.` DNS-only record
+  that `validate.sh` checks.
+- Verify that D1, KV, R2, and Cloudflare Access are accessible in the account.
+- Confirm the CF proxy is live by checking the HTTP response code from the subdomain.
 
 ---
 
 ## Pre-state
 
-- Cloudflare account created and email verified.
-- Either: workshop subdomain card in hand (`[8-character-hex].eplabs.cloud`), or own domain already added to Cloudflare with active nameserver delegation.
-- `wrangler` installed on your laptop (`npm install -g wrangler@4` or via the devcontainer).
-- `dig` available (`dnsutils` on Debian/Ubuntu, `bind-utils` on RHEL/Fedora, built-in on macOS).
+Before starting, confirm all of the following in the operator console:
+
+```sh
+# wrangler is present (pre-installed in the Dev Container / Codespace):
+wrangler --version
+
+# dig is present (pre-installed; used in Steps 2 and 3):
+command -v dig
+
+# curl is present:
+command -v curl
+```
+
+If `wrangler` is missing, it means the Dev Container image did not build correctly.
+Rebuild the container (`Dev Containers: Rebuild Container` in VS Code or delete
+and re-create the Codespace) before continuing.
+
+You also need:
+
+- Your workshop subdomain (from your student assignment card), for example
+  `a00f3f13.eplabs.cloud`, OR your own domain already added to Cloudflare.
+- Access to the Cloudflare dashboard at [dash.cloudflare.com](https://dash.cloudflare.com)
+  from a browser (for the DNS record creation in Step 3).
 
 ---
 
 ## Walkthrough
 
-### Part 1 — Domain access verification (5 minutes)
+<LabStep lab="lab04" id="wrangler-auth" num={1} title="Authenticate wrangler">
 
-#### Workshop subdomain users
-
-1. **Verify subdomain assignment:**
-
-   ```
-   Your subdomain: [8-character-hex].eplabs.cloud
-   Example: a00f3f13.eplabs.cloud
-   ```
-
-2. **Add site to Cloudflare:**
-   - Login to cloudflare.com.
-   - Click "Add a Site".
-   - Enter your exact subdomain.
-   - Select "Free" plan.
-   - Wait for "Active" status (usually instant).
-
-3. **Verify ownership if prompted:**
-   - CF may request email verification.
-   - Use the email you registered with.
-   - Instructor can assist with verification.
-
-#### Own domain users
-
-1. **Verify domain status:**
-
-   ```sh
-   # Check your domain is active in CF dashboard.
-   # Status should show "Active".
-   # If "Pending", nameservers need updating at registrar.
-   ```
-
-2. **Test DNS control:**
-
-   ```sh
-   # Create test record in CF dashboard:
-   # Type: A
-   # Name: test
-   # Content: 1.2.3.4
-
-   # Verify from command line:
-   dig A test.yourdomain.com
-   # Should return 1.2.3.4
-   ```
-
-3. **Verify all services accessible:**
-   - Workers & Pages: Available in sidebar.
-   - DNS management: Can create/edit records.
-   - Storage services: D1 and R2 visible.
-
----
-
-### Part 2 — DNS record setup (5 minutes)
-
-#### Required workshop records (both domain types)
-
-Create these DNS records for later labs:
+`wrangler login` opens a browser OAuth flow. In the Dev Container, the browser
+does not open automatically. Copy the URL that `wrangler` prints to the terminal,
+open it in the browser on your laptop, and complete the OAuth grant. The CLI will
+detect the callback.
 
 ```sh
-# Wildcard record for Worker routing:
-# Type: A
-# Name: *
-# Content: 192.0.2.1  (RFC5737 documentation range — overridden by Workers routing)
-# Proxy: Proxied (orange cloud)
-
-# Root record for tunnel:
-# Type: A
-# Name: @ (or leave blank for own domain)
-# Content: 192.0.2.1
-# Proxy: Proxied (orange cloud)
+# Run this in the operator console terminal:
+wrangler login
 ```
 
-#### Workshop subdomain additional setup
+Expected output after successful authentication:
 
-```sh
-# Test connectivity record:
-# Type: A
-# Name: test
-# Content: 1.2.3.4
-# Proxy: DNS only (gray cloud)
+```
+Successfully logged in.
 ```
 
----
-
-### Part 3 — Service access verification (5 minutes)
-
-#### Verify Cloudflare services are accessible
-
-1. **Workers & Pages:** Visible in left sidebar; can create a new Worker (do not deploy yet).
-2. **DNS Management:** Can view and edit DNS records; records created above appear in the list.
-3. **Storage:** D1 Database and R2 Object Storage visible under "Storage".
-4. **Zero Trust:** Access settings available; Tunnel options visible.
-
-#### Test DNS resolution from the command line
-
-Workshop subdomain users:
-
-```sh
-dig A test.a00f3f13.eplabs.cloud
-# Should return: 1.2.3.4
-
-dig A anything.a00f3f13.eplabs.cloud
-# Should return: 192.0.2.1 (wildcard record)
-```
-
-Own domain users:
-
-```sh
-dig A test.yourdomain.com
-# Should return: 1.2.3.4
-
-dig A anything.yourdomain.com
-# Should return: 192.0.2.1 (wildcard record)
-```
-
-#### Verify wrangler authentication
+Confirm the account is visible:
 
 ```sh
 wrangler whoami
-# Expected output includes your Cloudflare account name and email.
-# If not logged in: wrangler login
+# Expected: prints your Cloudflare account name and email address.
 ```
+
+<EnvBlock env="codespace">
+
+> **Codespace users:** port forwarding handles the OAuth callback automatically
+> in most cases. If the browser does not redirect back, look for a "Open in
+> browser" prompt in the VS Code port-forward notification, or copy the printed
+> URL manually.
+
+</EnvBlock>
+
+**API token alternative.** If OAuth is blocked (corporate proxy, headless
+environment), use a scoped API token instead:
+
+```sh
+# Generate a token at https://dash.cloudflare.com/profile/api-tokens
+# with "Edit Cloudflare Workers" template plus D1, KV, R2 read permissions.
+export CLOUDFLARE_API_TOKEN="your-token-here"
+wrangler whoami    # should succeed without running wrangler login
+```
+
+</LabStep>
+
+<LabStep lab="lab04" id="dns-resolve" num={2} title="Verify the workshop subdomain resolves">
+
+Your workshop subdomain is delegated to Cloudflare's nameservers by the
+instructor-side zone configuration. This step confirms the delegation is active
+before you add records to it.
+
+```sh
+# Set your domain once; used in all subsequent commands:
+export DOMAIN="a00f3f13.eplabs.cloud"   # substitute your actual subdomain
+
+# Query the NS records for your subdomain via Cloudflare's resolver:
+dig NS "$DOMAIN" @1.1.1.1
+# Expected: two NS records in the ANSWER section pointing to
+# NS1.CLOUDFLARE.COM and NS2.CLOUDFLARE.COM (or the delegated sub-zone NS).
+# If the ANSWER section is empty, the delegation is not yet active.
+# Contact the instructor.
+
+# Confirm the zone is active in the CF dashboard:
+wrangler zones list 2>/dev/null || true
+# If wrangler zones list isn't available in the installed version, check
+# the dashboard directly: the zone should show "Active" status.
+```
+
+> **Own domain users.** If your domain was already active in Cloudflare before
+> the workshop, the NS check will return your registrar's NS records pointing to
+> Cloudflare. This is correct. Proceed.
+
+</LabStep>
+
+<LabStep lab="lab04" id="dns-records" num={3} title="Create the required DNS records">
+
+Two records are needed. Create both in the Cloudflare dashboard
+([dash.cloudflare.com](https://dash.cloudflare.com)) under your domain's DNS
+settings.
+
+**Record 1: wildcard proxied `A` record (for Worker routing)**
+
+| Field | Value |
+|-------|-------|
+| Type | A |
+| Name | `*` |
+| Content | `192.0.2.1` |
+| Proxy status | Proxied (orange cloud) |
+| TTL | Auto |
+
+The `192.0.2.1` address is from the RFC 5737 documentation range. Cloudflare's
+proxy layer intercepts all traffic destined for `*.yourdomain` before it ever
+reaches that IP. The address is a placeholder; the actual origin is your Worker
+or Tunnel, configured in later labs.
+
+**Record 2: `test.` DNS-only `A` record (for DNS control verification)**
+
+| Field | Value |
+|-------|-------|
+| Type | A |
+| Name | `test` |
+| Content | `1.2.3.4` |
+| Proxy status | DNS only (gray cloud) |
+| TTL | Auto |
+
+This record is a no-op for traffic; it exists so `validate.sh` can confirm you
+have write access to the zone and that DNS resolution is working end-to-end.
+
+**Verify both records from the operator console:**
+
+```sh
+# Test record (DNS only; resolves to the real IP you set):
+dig +short A "test.${DOMAIN}" @1.1.1.1
+# Expected: 1.2.3.4
+
+# Wildcard record (proxied; Cloudflare returns its own anycast IP, not 192.0.2.1):
+dig +short A "validate-lab04-check.${DOMAIN}" @1.1.1.1
+# Expected: 192.0.2.1
+# (Proxied records with RFC5737 placeholder IPs return the placeholder;
+# CF only substitutes its own IP for publicly routable addresses.)
+```
+
+> **Proxied wildcard behavior.** When a record is proxied and the content is an
+> RFC 5737 address (192.0.2.0/24, 198.51.100.0/24, or 203.0.113.0/24),
+> Cloudflare returns the configured IP rather than its anycast IP. This is
+> intentional for the workshop setup: `validate.sh` checks for `192.0.2.1` by
+> querying the resolver, and that check is meaningful because Cloudflare is
+> answering it (DNS delegation is confirmed), not because traffic actually
+> reaches 192.0.2.1.
+
+</LabStep>
+
+<LabStep lab="lab04" id="entitlements" num={4} title="Confirm D1, KV, R2, and Access entitlements">
+
+Day 2 deploys the Worker (Lab 07), binds it to D1 and KV (same lab), stores
+artifacts in R2 (Lab 10), and gates everything with Access (Lab 08). Verify
+each service is reachable now so you are not troubleshooting entitlements under
+time pressure on Day 2.
+
+**Wrangler CLI checks:**
+
+```sh
+# D1: list databases (empty is fine; just confirms the binding is available)
+wrangler d1 list
+
+# KV: list namespaces (empty is fine)
+wrangler kv namespace list
+
+# R2: list buckets (empty is fine)
+wrangler r2 bucket list
+```
+
+Each command should exit 0 and return either a JSON array or an empty list. A
+non-zero exit or an "unauthorized" error means the API token is missing the
+required permission scope; re-issue the token with D1/KV/R2 read permissions
+(or re-run `wrangler login` to use the full OAuth scope).
+
+**Dashboard check for Zero Trust / Access:**
+
+Open [dash.cloudflare.com](https://dash.cloudflare.com), select your account,
+and confirm "Zero Trust" appears in the left sidebar. Click it and verify the
+Access application list is reachable. Lab 08 creates an Access application; no
+existing applications are needed here.
+
+> **Free plan note.** D1, KV, R2, and Access are all available on the Cloudflare
+> free tier within the workshop's usage envelope. The workshop does not require a
+> paid plan.
+
+</LabStep>
+
+<LabStep lab="lab04" id="smoke-test" num={5} title="Smoke-test the CF proxy">
+
+With the wildcard proxied record in place, HTTPS to any subdomain should reach
+Cloudflare's edge, even though no Worker is deployed yet. The edge will return
+a 5xx error code in the 521-524 range (origin unreachable) because the actual
+origin has not been configured. That is the expected result at this stage.
+
+```sh
+# The root domain:
+curl -sS -o /dev/null -w '%{http_code}\n' --max-time 15 "https://${DOMAIN}/"
+# Expected: 2xx, 3xx, or 521-524.
+# 000 means curl could not connect at all; check that the record is proxied.
+
+# A wildcard subdomain (should hit the wildcard record):
+curl -sS -o /dev/null -w '%{http_code}\n' --max-time 15 "https://api.${DOMAIN}/"
+# Expected: same range.
+```
+
+A result in the `521`-`524` range is a CF origin error: the proxy is active and
+forwarding to an origin that has not been configured. This confirms:
+
+- The zone is active in Cloudflare.
+- The wildcard record is proxied.
+- TLS is terminating at the CF edge (the certificate is issued by Cloudflare).
+
+Lab 06 (Cloudflare Tunnel) and Lab 07 (First Worker) attach real origins to
+these routes. The smoke-test result will change to `200` once those labs complete.
+
+</LabStep>
 
 ---
 
 ## Post-state
 
-All of the following must be true before proceeding to Lab 05:
+When this lab is complete, all of the following should be true:
 
-- Active Cloudflare site (workshop subdomain or own domain, status "Active").
-- Wildcard and root A records created and proxied.
-- `dig A test.<your-domain>` returns `1.2.3.4`.
-- Workers, D1, R2, and Zero Trust visible in the CF dashboard.
-- `wrangler whoami` returns your account name.
-
-From this point forward, workshop subdomain and own domain users follow identical labs. The only difference is your domain name in commands and configurations.
-
-| User type | Domain used in remaining labs |
-|-----------|-------------------------------|
-| Workshop subdomain | `a00f3f13.eplabs.cloud` (your hex) |
-| Own domain | `alice-workshop.dev` (your domain) |
-| Lab instructions use | `your-domain.com` (placeholder) |
+- [ ] `wrangler whoami` prints your Cloudflare account name.
+- [ ] `dig +short A "test.${DOMAIN}" @1.1.1.1` returns `1.2.3.4`.
+- [ ] `dig +short A "validate-lab04-check.${DOMAIN}" @1.1.1.1` returns `192.0.2.1`.
+- [ ] `wrangler d1 list`, `wrangler kv namespace list`, and `wrangler r2 bucket list`
+      all exit 0.
+- [ ] `curl -sS -o /dev/null -w '%{http_code}\n' "https://${DOMAIN}/"` returns
+      `2xx`, `3xx`, or `521`-`524`.
+- [ ] You can name the four Cloudflare services that Day 2 uses and confirm each
+      is visible in the dashboard or accessible via CLI.
 
 ---
 
 ## Validation
 
-Run the provided validator from your laptop:
+Three validation paths. All three call the same `validate.sh` and post the result
+to the same backend; only the delivery channel differs.
+
+**Path 1: `epl` CLI** (recommended from the operator console).
 
 ```sh
-chmod +x courses/engagement-platform-labs/labs/lab04-domain-verification/validate.sh
+DOMAIN=a00f3f13.eplabs.cloud epl validate lab04-domain-verification
+```
+
+Substitute your actual subdomain. The script exits 0 on full pass. Re-run as
+many times as needed; only the most recent result is recorded.
+
+**Path 2: direct script.**
+
+```sh
 DOMAIN=a00f3f13.eplabs.cloud \
-    courses/engagement-platform-labs/labs/lab04-domain-verification/validate.sh
+    bash courses/engagement-platform-labs/labs/lab04-domain-verification/validate.sh
 ```
 
-Own domain users:
-
-```sh
-DOMAIN=yourdomain.com \
-    courses/engagement-platform-labs/labs/lab04-domain-verification/validate.sh
-```
-
-Or via the Makefile (set `DOMAIN` in environment first):
+Or via the Makefile:
 
 ```sh
 cd courses/engagement-platform-labs/labs
 DOMAIN=a00f3f13.eplabs.cloud make validate-lab04-domain-verification
 ```
 
+**Path 3: paste output into the widget.**
+
+Run `validate.sh` anywhere, copy the full terminal output, and paste it into
+the widget below.
+
+**What the script checks:**
+
+1. `test.<DOMAIN>` resolves to `1.2.3.4` via `dig` against `1.1.1.1`.
+2. `validate-lab04-check.<DOMAIN>` resolves to `192.0.2.1` (wildcard record).
+3. `curl https://<DOMAIN>/` returns `2xx`, `3xx`, or `521`-`524` (CF proxy active).
+4. `wrangler whoami` exits 0 and prints a non-empty account name.
+   Set `SKIP_WRANGLER=1` to skip this check if wrangler is not installed.
+
 <ValidateOutputPaster lab="lab04" client:load />
+
+---
+
+## Further reading
+
+**Cloudflare DNS and zones:**
+
+- [Cloudflare DNS overview](https://developers.cloudflare.com/dns/). The full
+  zone and record management reference.
+- [DNS proxy (orange cloud)](https://developers.cloudflare.com/dns/manage-dns-records/reference/proxied-dns-records/).
+  What proxied vs. DNS-only means for each record type, and which records can
+  be proxied.
+
+**Wrangler CLI:**
+
+- [Wrangler CLI reference](https://developers.cloudflare.com/workers/wrangler/commands/).
+  Complete command reference. The `login`, `whoami`, `d1`, `kv`, and `r2`
+  subcommands used in this lab are documented here.
+
+**Services used in Day 2:**
+
+- [D1 (SQLite at the edge)](https://developers.cloudflare.com/d1/).
+  The database the Workshop Worker uses to record device enrollment.
+- [KV (key-value store)](https://developers.cloudflare.com/kv/).
+  Used for rate-limit state and shared config.
+- [R2 (object storage)](https://developers.cloudflare.com/r2/).
+  Used in Lab 10 to store captured packet artifacts.
+- [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/).
+  OTP-gated access configured in Lab 08.
+
+**Workshop-internal:**
+
+- [Lab 06: Cloudflare Tunnel](../lab06-cloudflare-tunnel/).
+  Attaches the Mango to your subdomain via a `cloudflared` tunnel running
+  on the operator console.
+- [Lab 07: First Worker](../lab07-first-worker/).
+  Deploys the Workshop Worker and binds it to D1 and KV under your subdomain.
+- `instructor/dns_delegation_setup_guide.md` documents how per-student
+  subdomains are provisioned under `eplabs.cloud`.
+
+---
+
+<MarkCompleteButton lab="lab04" client:load />
+
+> View this page's source: [`labs/lab04-domain-verification/README.mdx`](https://github.com/errantpacket/OpenWRT_Course/blob/main/courses/engagement-platform-labs/labs/lab04-domain-verification/README.mdx)
+
+<ViewSource path="labs/lab04-domain-verification/README.mdx" client:visible />
 
 ---
 
 ## Troubleshooting
 
 <details>
-<summary>Workshop subdomain — "Site not found" when adding to Cloudflare</summary>
+<summary>wrangler login: browser does not open in the Dev Container</summary>
 
-1. Double-check subdomain spelling exactly as on the card.
-2. Ensure you are using the correct email (the one registered during pre-workshop sign-up).
-3. Raise your hand — the instructor can verify the delegation status on the eplabs.cloud zone.
+`wrangler login` prints a URL to the terminal when it cannot open a browser
+automatically. Copy the URL and open it in the browser on your laptop. After
+you complete the OAuth grant, the CLI detects the callback and prints
+"Successfully logged in." If the callback never fires, check that port 8976
+(wrangler's default OAuth callback port) is forwarded in VS Code.
 
-</details>
-
-<details>
-<summary>Email verification requested</summary>
-
-1. Use the email address you registered with during pre-workshop.
-2. Check spam folder for the verification email.
-3. Instructor can resend verification if needed.
+As an alternative, generate an API token at
+[dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
+using the "Edit Cloudflare Workers" template (add D1, KV, and R2 read
+permissions), then set `CLOUDFLARE_API_TOKEN` in the operator console shell.
 
 </details>
 
 <details>
-<summary>Domain shows "Pending Nameserver Update"</summary>
+<summary>dig returns empty or NXDOMAIN for the test record</summary>
 
-1. Update nameservers at your domain registrar to the two NS records Cloudflare shows.
-2. Wait 5–60 minutes for propagation.
-3. Use https://dnschecker.org to verify NS propagation before retrying.
-
-</details>
-
-<details>
-<summary>DNS records not resolving</summary>
-
-1. Wait a few minutes — CF DNS propagates quickly but not instantly.
-2. Try a specific resolver: `dig @1.1.1.1 A test.yourdomain.com`
-3. Check proxy status: gray cloud (DNS only) resolves to your IP; orange cloud (proxied) resolves to CF's anycast IPs.
+- Wait two minutes after creating the record in the dashboard. CF DNS propagates
+  quickly but not instantly.
+- Try querying a specific resolver: `dig +short A "test.${DOMAIN}" @8.8.8.8`
+- Confirm the record was saved with gray cloud (DNS only). A proxied `test.`
+  record resolves to CF's anycast IP, not `1.2.3.4`.
+- If using your own domain: confirm the zone status is "Active" in the
+  Cloudflare dashboard. A "Pending" zone means nameserver delegation at the
+  registrar has not completed.
 
 </details>
 
 <details>
-<summary>wrangler login fails or times out</summary>
+<summary>Wildcard record resolves to wrong IP</summary>
 
-`wrangler login` opens a browser. If you are in the devcontainer, the browser may not open automatically. Use the URL printed to the terminal and open it manually on your laptop. Alternatively, use an API token: `wrangler login --api-token $(cat ~/.cloudflare-token)` if you have one pre-configured.
+The wildcard check queries `validate-lab04-check.<DOMAIN>` and expects `192.0.2.1`.
+Common reasons it fails:
+
+- The wildcard record (`*`) was created as DNS only (gray cloud) rather than
+  proxied (orange cloud). Proxied records with RFC 5737 content return the
+  configured IP via CF's resolver.
+- The wildcard record content is not exactly `192.0.2.1`.
+- A more specific record for `validate-lab04-check` exists and overrides the
+  wildcard. Check the DNS records list in the dashboard.
 
 </details>
 
----
+<details>
+<summary>curl returns 000 (connection failure)</summary>
 
-**Questions about domain setup or Cloudflare access before proceeding to Lab 05 (Tailscale Mesh)?**
+`000` means `curl` could not establish a TCP connection, not that the server
+returned an error code. Check:
 
-*Instructor: verify all students have active CF access and required DNS records before continuing.*
+- The wildcard `A` record exists and is set to proxied (orange cloud).
+- The zone status in the CF dashboard is "Active," not "Pending."
+- Your operator console has outbound HTTPS access. Test with
+  `curl -sS -o /dev/null -w '%{http_code}\n' https://cloudflare.com/`.
 
-<MarkCompleteButton lab="lab04" client:load />
+</details>
+
+<details>
+<summary>wrangler d1 list / kv namespace list / r2 bucket list: unauthorized</summary>
+
+The OAuth token issued by `wrangler login` covers Workers and basic account
+access. D1, KV, and R2 scopes are included by default for full-access tokens,
+but a restricted API token may be missing them. Either:
+
+1. Re-run `wrangler login` to refresh with a full-access token, or
+2. Generate a new API token at
+   [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
+   with the "Edit Cloudflare Workers" template and add the D1, KV, and R2
+   read-write permissions manually. Set `CLOUDFLARE_API_TOKEN` in the shell.
+
+</details>
+
+<details>
+<summary>Workshop subdomain not found or "Add a Site" fails</summary>
+
+The per-student subdomain is delegated at the `eplabs.cloud` zone level before
+the workshop. Students do not add it to Cloudflare via "Add a Site." The
+subdomain should already appear in your account's zone list when you open the
+dashboard. If it is missing, check with the instructor: the delegation record
+may not have been created for your slot, or the wrong email was associated with
+your assignment card.
+
+</details>
