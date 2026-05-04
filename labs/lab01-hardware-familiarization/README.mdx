@@ -36,6 +36,29 @@ normal tools. Practice them before you need them.
 > exercises in Steps 6 and 7. Both recovery exercises rely on serial being attached.
 > Do not skip ahead.
 
+### Where each step runs
+
+This lab is marked **`codespaces: "partial"`** — about half the steps need physical
+access to your bench (Mango on local LAN, USB-UART adapter), while the rest run
+fine in either a local Dev Container or a GitHub Codespace. Use this map to plan
+which terminal lives where.
+
+| Step | Bench laptop required | Operator console (local Dev Container or Codespace) |
+|------|:---------------------:|:---------------------------------------------------:|
+| 1. Physical inspection | yes | no |
+| 2. SSH to Mango        | yes (Mango is on your local LAN) | no |
+| 3. Serial console      | yes (USB-UART is local hardware) | no |
+| 4. Devcontainer + sibling | no | **yes** |
+| 5. Side-by-side compare | yes (Mango SSH from laptop) | yes (sibling lives in operator console) |
+| 6. Failsafe via serial | yes | no |
+| 7. U-Boot HTTP recovery | yes | no |
+| Validation             | depends — see below | — |
+
+For Codespace students: keep your laptop terminal open for Mango SSH and serial
+work. The Codespace browser tab is your "operator console" and is where Steps 4
+and 5's sibling lives. Validation can run from either side; see the Validation
+section.
+
 ---
 
 ## Learning objectives
@@ -57,19 +80,42 @@ normal tools. Practice them before you need them.
 
 Before starting this lab confirm all of the following.
 
-**Software on your laptop:**
+**Software on your laptop (always required — the bench-side work):**
 
 ```sh
-# Docker is running
-docker info | grep -E '^Server Version'
-
 # A serial terminal client is installed (any one of these works)
 command -v screen || command -v picocom || command -v minicom || command -v tio || \
     echo "Install one: sudo apt install screen  (or picocom / tio)"
 
-# The OpenWrt rootfs sibling image is local. post-create.sh pre-pulls it on
-# devcontainer build; if it's missing, Step 4b will pull on demand.
-docker images | grep openwrt/rootfs
+# An SSH client (almost always present; install openssh-client if not)
+command -v ssh
+```
+
+**Operator console — pick one:**
+
+- **Local Dev Container.** Install [Docker Desktop][docker-desktop] (or
+  [Podman Desktop][podman-desktop]) and the [Dev Containers VS Code
+  extension][devc-ext]. Open this repo in VS Code and click "Reopen in
+  Container." The pre-pulled OpenWrt rootfs sibling image takes ~15 MB.
+- **GitHub Codespace.** Click **"Open in Codespaces"** on the lab page or
+  visit [`codespaces.new/errantpacket/epl-student-starter`][cs-link]. The
+  free [personal Codespaces tier][cs-pricing] (120 core-hours/month) is more
+  than enough for this workshop. No Docker needed on your laptop.
+
+[docker-desktop]: https://www.docker.com/products/docker-desktop/
+[podman-desktop]: https://podman-desktop.io/
+[devc-ext]: https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers
+[cs-link]: https://codespaces.new/errantpacket/epl-student-starter
+[cs-pricing]: https://docs.github.com/en/billing/managing-billing-for-github-codespaces/about-billing-for-github-codespaces
+
+Once the operator console is up, verify the engagement stack:
+
+```sh
+# These commands run inside the operator console (Debian shell), not on your laptop:
+tailscale version           # the operator stack tools
+cloudflared --version
+wrangler --version
+docker images openwrt/rootfs   # sibling image, pre-pulled by post-create.sh
 ```
 
 **Hardware on the bench (per student):**
@@ -185,6 +231,12 @@ ssh root@<span data-profile-ip>192.168.8.1</span>
 **Keep this SSH session open through Step 5.** We'll re-use it for the side-by-side
 comparison.
 
+> **Codespace users:** SSH to the Mango must be from your **laptop** terminal, not
+> from the Codespace. The Mango lives on your local LAN (`192.168.8.0/24` or
+> `192.168.1.0/24`); the Codespace is a remote VM that can't see it directly.
+> Lab 05 puts the Mango on a Tailscale tailnet — once that's done, the Codespace
+> *can* reach the Mango by tailnet hostname. For Lab 01, just use the laptop.
+
 Once connected, gather system facts:
 
 ```sh
@@ -213,6 +265,17 @@ opkg list-installed | wc -l
 That same target string drives the firmware images you'll build with ImageBuilder
 in Lab 02 — both the operator-platform image (x86/64 target, conceptual) and the
 real Mango drop image (ramips/mt76x8) come off the same baseline.
+
+> **Background reading.** [OpenWrt's UCI][uci-wiki] is the unified config system
+> that ties together `/etc/config/*`, `/etc/init.d/*`, and the `uci` CLI. It is
+> the single most important concept in the OpenWrt mental model and you'll touch
+> it in every Mango-side lab. Skim it now if you haven't met UCI before.
+>
+> [opkg][opkg-wiki] is the package manager. Read just the "Useful commands"
+> section — that's all you need today. The full feed system shows up in Lab 02.
+
+[uci-wiki]: https://openwrt.org/docs/guide-user/base-system/uci
+[opkg-wiki]: https://openwrt.org/docs/guide-user/additional-software/opkg
 
 ---
 
@@ -285,6 +348,15 @@ Notable lines to watch for (we'll reference these in Steps 6 and 7):
 If you see all three of these, your serial is working. Press Enter at the OpenWrt
 login prompt to confirm bidirectional input works.
 
+> **Background reading.** [OpenWrt's serial-console guide][serial-wiki] documents
+> the full pinout discovery process for unfamiliar hardware. The
+> [`u-boot_mod` README][ubm] (linked again in Step 7) covers the bootloader
+> commands available at the `gl ar7240>` prompt — `printenv`, `bootm`,
+> `tftpboot`, `setenv`/`saveenv` — useful if you need to escape an unbootable
+> kernel without HTTP recovery.
+
+[serial-wiki]: https://openwrt.org/docs/techref/hardware/port.serial
+
 ---
 
 ### 4. The devcontainer as soft hardware
@@ -302,7 +374,18 @@ The engagement-platform devcontainer is **two-tier**:
 
 From a shell prompt, the OpenWrt sibling is indistinguishable from the Mango
 except for target architecture and available storage. UCI, opkg, /etc/init.d,
-procd — identical. **The OS is the OS.**
+[procd][procd-wiki] — identical. **The OS is the OS.**
+
+> **Background reading.** The [Dev Containers specification][devcontainers-spec]
+> is what `devcontainer.json` conforms to — the same file works for VS Code
+> Dev Containers, GitHub Codespaces, IntelliJ Gateway, DevPod, and others.
+> Codespaces is just a hosted runtime for that spec; see [GitHub's
+> Codespaces docs][cs-docs] for the lifecycle (auto-stop after 30 min idle,
+> auto-delete after 30 days inactive, prebuilds, etc.).
+
+[procd-wiki]: https://openwrt.org/docs/techref/procd
+[devcontainers-spec]: https://containers.dev/
+[cs-docs]: https://docs.github.com/en/codespaces/overview
 
 #### 4a. Open in VS Code (or Codespaces)
 
@@ -429,10 +512,16 @@ architectural, not operational.
 
 ### 6. Recovery method 1 — OpenWrt failsafe via serial
 
-Failsafe mode bypasses all custom OpenWrt configuration and drops the device into a
-minimal shell. Use it when a bad config locks you out of the OS — wrong LAN IP, lost
-root password, broken `/etc/init.d/network`. The OS still boots; it's the running
-configuration that's wrong.
+> **Bench-only:** this step requires the laptop's serial UART connection from
+> Step 3. Codespace students should run this alongside the laptop terminal — the
+> Codespace can't drive failsafe.
+
+[Failsafe mode][failsafe-wiki] bypasses all custom OpenWrt configuration and
+drops the device into a minimal shell. Use it when a bad config locks you out of
+the OS — wrong LAN IP, lost root password, broken `/etc/init.d/network`. The OS
+still boots; it's the running configuration that's wrong.
+
+[failsafe-wiki]: https://openwrt.org/docs/guide-user/troubleshooting/failsafe_and_factory_reset
 
 > **Important:** failsafe is entered over **the serial console** (UART) you attached
 > in Step 3, NOT by holding the reset button. The reset-at-boot mechanism does
@@ -507,6 +596,10 @@ isn't required, and we don't exercise it here.
 ---
 
 ### 7. Recovery method 2 — U-Boot HTTP recovery (`u-boot_mod`)
+
+> **Bench-only:** this step assigns a static IP on your laptop's Ethernet
+> interface to talk to the Mango at `192.168.1.1`. The Codespace can't reach
+> the Mango's local LAN.
 
 When the OS is so broken it won't boot at all — for example after a failed sysupgrade
 or a corrupted kernel — failsafe is unreachable because no kernel is running. The next
@@ -654,7 +747,31 @@ When this lab is complete you should be able to answer yes to all of the followi
 
 ## Validation
 
-Run `validate.sh` from the lab directory:
+Three validation paths — pick whichever matches your setup. All three call
+the same `validate.sh` and post the result to the same backend; only the
+delivery channel differs.
+
+**Path 1 — `epl` CLI (recommended in operator console):**
+
+The `epl-cli` tool is symlinked to `epl` on PATH by `post-create.sh`. After
+running `epl login` once (paste a token from
+[`/profile`](https://course.eplabs.cloud/profile)), each lab is a single command:
+
+```sh
+epl validate lab01-hardware-familiarization
+```
+
+Output streams to your terminal; pass/fail and a "Mark complete" event are
+posted automatically. Re-run as many times as you like — only the most
+recent result is recorded. From inside the **operator console** is the
+expected place; the validation script SSHes to the Mango (laptop must be
+reachable from the operator console — works in local Dev Containers and,
+after Lab 05, in Codespaces over the tailnet).
+
+**Path 2 — direct script (bench laptop):**
+
+If you're working on your laptop only and haven't moved the operator console
+to the Mango yet, run the script directly from your laptop:
 
 ```sh
 bash courses/engagement-platform-labs/labs/lab01-hardware-familiarization/validate.sh
@@ -669,6 +786,12 @@ make validate-lab01-hardware-familiarization
 
 The script exits `0` on success and prints the first failing assertion on failure.
 
+**Path 3 — paste output into the widget:**
+
+Run `validate.sh` anywhere, copy the full output, paste into the widget
+below. Equivalent to Path 1 but manual; useful when neither the laptop nor
+the operator console can reach the site directly.
+
 **What the script checks:**
 
 1. SSH into the Mango at `$MANGO_HOST` succeeds and `/etc/openwrt_release` contains
@@ -677,7 +800,8 @@ The script exits `0` on success and prints the first failing assertion on failur
    same `DISTRIB_ID`.
 
 **Pre-flashed pure-OpenWrt Mangos:** override the IP per the Step 2 note —
-`MANGO_HOST=192.168.1.1 ./validate.sh`.
+`MANGO_HOST=192.168.1.1 ./validate.sh` (or
+`MANGO_HOST=192.168.1.1 epl validate lab01-hardware-familiarization`).
 
 <ValidateOutputPaster lab="lab01" client:load />
 
@@ -686,6 +810,62 @@ The script exits `0` on success and prints the first failing assertion on failur
 ## Take-home extension
 
 See [`take-home/README.md`](take-home/README.md) for a pointer to the MT3000 tour content.
+
+---
+
+## Further reading
+
+Lab 01's surface area is broad on purpose — recovery, hardware, two operating
+environments. The links below let you go deeper on whichever piece interested
+you most.
+
+**OpenWrt fundamentals** (skim these before Lab 02):
+
+- [OpenWrt Quick Start Guide](https://openwrt.org/docs/guide-quick-start/start) —
+  the official 10-minute tour of OpenWrt concepts.
+- [The UCI configuration system](https://openwrt.org/docs/guide-user/base-system/uci) —
+  every Mango-side lab from Lab 03 forward edits UCI. Read at minimum the
+  "Command-line utility" section.
+- [opkg — package management](https://openwrt.org/docs/guide-user/additional-software/opkg) —
+  install/remove/upgrade. Lab 02 builds custom firmware; opkg is what populates it.
+- [procd — process and service manager](https://openwrt.org/docs/techref/procd) —
+  init, hotplug, and the failsafe entry point you used in Step 6.
+- [Failsafe and factory reset](https://openwrt.org/docs/guide-user/troubleshooting/failsafe_and_factory_reset) —
+  upstream's full failsafe doc, including the network-failsafe (telnet) path
+  this lab does not exercise.
+
+**Hardware-specific:**
+
+- [GL-MT300N-V2 (Mango) device page](https://openwrt.org/toh/gl.inet/gl-mt300n_v2) —
+  OpenWrt's hardware compatibility entry: SoC, flash layout, supported releases,
+  known issues.
+- [Serial console pinout discovery](https://openwrt.org/docs/techref/hardware/port.serial) —
+  how to find UART pads on an unfamiliar board safely.
+- [`u-boot_mod` (pepe2k fork)](https://github.com/pepe2k/u-boot_mod) — bootloader
+  used by GL.iNet MT7628-class devices; HTTP recovery server source, command
+  reference, and build instructions for porting to other devices.
+- [MediaTek MT7628 datasheet (community mirror)](https://wikidevi.wi-cat.ru/MediaTek_MT7628) —
+  for those curious about the SoC behind the Mango.
+
+**Containers and the operator console:**
+
+- [Dev Containers specification](https://containers.dev/) — the open spec
+  `devcontainer.json` follows. Once you understand it, every lab in this course
+  becomes a portable artifact across editors and runtimes.
+- [GitHub Codespaces overview](https://docs.github.com/en/codespaces/overview) —
+  lifecycle, billing, prebuilds, secrets management.
+- [Tailscale userspace networking](https://tailscale.com/kb/1112/userspace-networking) —
+  the mode the Codespace path uses, and why Lab 05 will set
+  `--tun=userspace-networking` automatically when `$CODESPACES` is set.
+
+**Workshop-internal:**
+
+- [Lab 02 — ImageBuilder Firmware](../lab02-imagebuilder-firmware/) — what comes
+  next; you'll bake your own Mango image off the same `ramips/mt76x8` baseline
+  you saw in Step 2.
+- [`AUTHORING.md`](https://github.com/errantpacket/OpenWRT_Course/blob/main/courses/engagement-platform-labs/AUTHORING.md) —
+  for instructors and contributors: how lab content, the site, the worker, and
+  the student-starter sync fit together.
 
 ---
 
