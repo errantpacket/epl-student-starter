@@ -93,14 +93,30 @@ command -v ssh
 
 **Operator console — pick one:**
 
-- **Local Dev Container.** Install [Docker Desktop][docker-desktop] (or
-  [Podman Desktop][podman-desktop]) and the [Dev Containers VS Code
+- **Local Dev Container** (recommended for the full course). Install
+  [Docker Desktop][docker-desktop] (or [Podman Desktop][podman-desktop] —
+  also free, lighter on macOS/Windows) and the [Dev Containers VS Code
   extension][devc-ext]. Open this repo in VS Code and click "Reopen in
-  Container." The pre-pulled OpenWrt rootfs sibling image takes ~15 MB.
-- **GitHub Codespace.** Click **"Open in Codespaces"** on the lab page or
-  visit [`codespaces.new/errantpacket/epl-student-starter`][cs-link]. The
-  free [personal Codespaces tier][cs-pricing] (120 core-hours/month) is more
+  Container." First build is ~3-5 min; the pre-pulled OpenWrt rootfs
+  sibling image takes ~15 MB on top.
+- **GitHub Codespace** (zero local install). Click **"Open in Codespaces"**
+  on the lab page or visit
+  [`codespaces.new/errantpacket/epl-student-starter`][cs-link]. The free
+  [personal Codespaces tier][cs-pricing] (120 core-hours/month) is more
   than enough for this workshop. No Docker needed on your laptop.
+- **Minimal local — Lab 01 only** (just docker, no VS Code, no devcontainer).
+  Lab 01 only needs the OpenWrt rootfs sibling. If you don't want to install
+  the Dev Containers extension or build the full operator console yet, the
+  bare path is two commands. **You will need the full operator console
+  starting in Lab 04** (for wrangler/tailscale/cloudflared) — plan
+  accordingly.
+  ```sh
+  # Pull the rootfs once (~15 MB)
+  docker pull openwrt/rootfs:x86-64-23.05.3
+
+  # Skip Step 4a entirely; jump to Step 4b which boots this image directly.
+  # Validate.sh and `docker exec ep-devcontainer ...` work the same.
+  ```
 
 [docker-desktop]: https://www.docker.com/products/docker-desktop/
 [podman-desktop]: https://podman-desktop.io/
@@ -108,7 +124,8 @@ command -v ssh
 [cs-link]: https://codespaces.new/errantpacket/epl-student-starter
 [cs-pricing]: https://docs.github.com/en/billing/managing-billing-for-github-codespaces/about-billing-for-github-codespaces
 
-Once the operator console is up, verify the engagement stack:
+If you chose **Local Dev Container** or **Codespace**, verify the engagement
+stack inside the operator console:
 
 ```sh
 # These commands run inside the operator console (Debian shell), not on your laptop:
@@ -116,6 +133,13 @@ tailscale version           # the operator stack tools
 cloudflared --version
 wrangler --version
 docker images openwrt/rootfs   # sibling image, pre-pulled by post-create.sh
+```
+
+If you chose **Minimal local**, only verify the rootfs is present on your
+laptop's Docker daemon:
+
+```sh
+docker images openwrt/rootfs    # should show the x86-64-23.05.3 tag
 ```
 
 **Hardware on the bench (per student):**
@@ -378,6 +402,11 @@ The engagement-platform devcontainer is **two-tier**:
 From a shell prompt, the OpenWrt sibling is indistinguishable from the Mango
 except for target architecture and available storage. UCI, opkg, /etc/init.d,
 [procd][procd-wiki] — identical. **The OS is the OS.**
+
+> **Minimal-local students:** Step 4a (operator console attach) doesn't apply
+> to you — there's no Debian outer to attach to. Skip ahead to **Step 4b**;
+> the `docker run` invocation there is your entry point. Everything from
+> Step 4b onward is identical regardless of which pre-state path you took.
 
 > **Background reading.** The [Dev Containers specification][devcontainers-spec]
 > is what `devcontainer.json` conforms to — the same file works for VS Code
