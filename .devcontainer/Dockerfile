@@ -47,9 +47,12 @@ RUN curl -fsSL -o /usr/sbin/cloudflared \
  && chmod +x /usr/sbin/cloudflared \
  && /usr/sbin/cloudflared --version
 
-# Workshop convenience: wrangler for Workers/D1/KV/R2 deploys
-RUN opkg install nodejs npm \
- && npm install -g wrangler@4 \
+# Workshop convenience: wrangler for Workers/D1/KV/R2 deploys.
+# OpenWrt feed names are `node` / `node-npm` (not nodejs/npm).
+# OpenWrt 23.05.3 ships Node 18; pin wrangler@3 (wrangler@4 requires Node 20+).
+RUN opkg update \
+ && opkg install node node-npm \
+ && npm install -g wrangler@3 \
  && rm -rf /root/.npm /tmp/npm-* /tmp/opkg-lists/*
 
 ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
