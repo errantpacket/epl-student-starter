@@ -257,7 +257,10 @@ cat /proc/mtd
 # Memory
 free -m
 
-# Package count varies by firmware: stock GL.iNet ~150-200, pure OpenWrt ~140
+# Package counts (verified 2026-05-04):
+#   Stock GL.iNet firmware (Mango):           ~150-200 (baseline + GL.iNet UI/services)
+#   Upstream OpenWrt rootfs sibling (x86/64): ~127     (no GL.iNet additions; see Step 4)
+#   Pure-OpenWrt Mango (after Lab 02 build):  ~140     (depends on selected packages)
 opkg list-installed | wc -l
 ```
 
@@ -448,10 +451,20 @@ opkg update
 opkg list-installed | wc -l
 ```
 
-**Teaching moment:** compare the package counts between the Mango (stock
-GL.iNet firmware, hundreds of packages) and this bare rootfs (~30 packages).
-In Lab 02 you will build both to your exact specification from the same
-ImageBuilder baseline.
+**Teaching moment:** the bare upstream rootfs sibling has **~127 packages**
+(verified 2026-05-04 on `openwrt/rootfs:x86-64-23.05.3`). The Mango on stock
+GL.iNet firmware has **~150-200**. Both are roughly the same order of
+magnitude — the contrast isn't *count*, it's *what's installed*: the Mango
+adds GL.iNet's web UI, vendor services, and additional drivers on top of the
+upstream baseline. In Lab 02 you'll build a custom image that strips the
+GL.iNet additions and adds the engagement-stack you actually want.
+
+> **Why not "~30 packages" like a minimal busybox image?** Because
+> `openwrt/rootfs:x86-64-23.05.3` is the *standard* OpenWrt rootfs — busybox,
+> opkg, dropbear, libuci, libubox, netifd, mtd, the procd init, default
+> kernel modules, and the upstream package management plumbing. A "minimal"
+> rootfs would mean rebuilding from `imagebuilder` with everything stripped;
+> that's a Lab 02 exercise, not a baseline.
 
 When you're done with the sibling for the lab session:
 
@@ -478,14 +491,25 @@ openwrt-shell
 Run the same commands in both and note the differences:
 
 ```sh
-# Architecture
+# Architecture (CPU)
 uname -m
 # Mango: mips (or mipsel)   |  OpenWrt sibling: x86_64
 
+# Kernel — interesting difference (containers share the host kernel)
+uname -r
+# Mango:   5.15.x          (OpenWrt 23.05.3's bundled kernel)
+# Sibling: 6.8.0-azure ... (the Codespace VM's host kernel — or your laptop's)
+#
+# This is correct behavior: the OpenWrt sibling is just a userland packaged in a
+# container, so it inherits whatever kernel the container engine is running on.
+# UCI/opkg/procd live in userland and don't care.
+
 # Storage layout
 df -h
-# Mango: /rom is ~3.5MB squashfs (read-only) + / is ~10MB overlayfs (writable)
-# Sibling: / is the host's filesystem (effectively unbounded — TBs)
+# Mango:   /rom is ~3.5MB squashfs (read-only) + / is ~10MB overlayfs (writable)
+# Sibling: / is the host's filesystem (effectively unbounded — TBs).
+#          /rom and /overlay exist as empty stubs — there's no squashfs
+#          beneath, so the failsafe-style overlay dance is a no-op here.
 
 # OpenWrt version
 cat /etc/openwrt_release | grep DISTRIB_RELEASE
