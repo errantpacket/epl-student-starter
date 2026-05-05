@@ -97,7 +97,7 @@ ssh -o ConnectTimeout=5 root@192.168.8.1 'echo ok'   # stock GL.iNet; use 192.16
 # Docker is reachable from your operator console (this is the inner DinD
 # daemon in Codespace / Local Dev Container, or your host docker for
 # Minimal local).
-docker info | grep -E '^Server Version'
+docker info | grep 'Server Version'
 
 # Pull the OpenWrt 23.05.3 ImageBuilder image (~800 MB; first run only).
 docker pull openwrt/imagebuilder:ramips-mt76x8-23.05.3
@@ -156,7 +156,7 @@ cat labs/Makefile
 - **Base system:** `base-files`, `busybox`, `fstools`, `libc`, `mtd`,
   `netifd`, `opkg`, `uci`. The minimum you need for an OpenWrt boot.
 - **Crypto + transport:** `ca-bundle`, `ca-certificates`,
-  `dropbear-ed25519`, `libustream-mbedtls`, `urandom-seed`, `urngd`. The
+  `dropbear`, `libustream-mbedtls`, `urandom-seed`, `urngd`. The
   Mango speaks TLS to the Cloudflare Worker and accepts SSH from the
   tailnet operator.
 - **ExtRoot prerequisites:** `block-mount`, `kmod-usb-storage`, `kmod-usb3`,
@@ -314,8 +314,11 @@ cat labs/output/*glinet_gl-mt300n-v2*.manifest | sort
 
 # 2) Count it.
 wc -l labs/output/*glinet_gl-mt300n-v2*.manifest
-# A clean drop-mango build lands around 35–45 packages: the base system,
-# crypto + transport, ExtRoot prereqs, and a handful of tools.
+# A clean drop-mango build lands around 90 packages (verified 2026-05-04
+# at 93 lines). The PACKAGES list is small (~30 named entries), but opkg's
+# dependency resolution pulls in libc, libgcc, mbedtls, kernel modules,
+# wireless-regdb, and similar transitive deps, so the resolved manifest is
+# roughly 3x the named-package count.
 
 # 3) From inside the OpenWrt rootfs sibling (Lab 01 Step 4b), get its
 #    package count for comparison:
@@ -358,7 +361,7 @@ When this lab is complete you should be able to answer yes to all of the followi
 - [ ] `validate.sh` exits 0.
 - [ ] You can name three packages that are present in the Mango image and
       explain what each enables (canonical answer: `block-mount` for ExtRoot,
-      `dropbear-ed25519` for SSH, `ca-bundle` for outbound TLS).
+      `dropbear` for SSH, `ca-bundle` for outbound TLS).
 - [ ] You can name three packages that are deliberately absent from the
       Mango image and explain why (canonical answer: `luci` because no web
       UI is needed in the drop role; `dnsmasq` because the Mango is not a

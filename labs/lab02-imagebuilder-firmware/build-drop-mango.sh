@@ -35,7 +35,7 @@ SQUASHFS_CEILING_BYTES=$((13 * 1024 * 1024))
 # === PACKAGES (canonical, plan-approved) ===
 # Keep this list short. Anything multi-MB belongs on the ExtRoot USB.
 PACKAGES="
-  base-files busybox ca-bundle ca-certificates dropbear-ed25519
+  base-files busybox ca-bundle ca-certificates dropbear
   fstools libc libgcc libustream-mbedtls logd mtd netifd opkg uci
   uclient-fetch urandom-seed urngd
   block-mount kmod-usb-storage kmod-usb3 kmod-fs-ext4 e2fsprogs
@@ -69,7 +69,21 @@ if [ -f "$FILES_DIR/etc/uci-defaults/99-enroll.sh" ]; then
     fi
 fi
 
-cd "$(dirname "$(find /home/buildbot -maxdepth 3 -name 'Makefile' -path '*openwrt-imagebuilder*' | head -1 || echo /home/buildbot/openwrt-imagebuilder/Makefile)")"
+# Upstream openwrt/imagebuilder unpacks ImageBuilder at /builder. Older
+# revisions of this script searched /home/buildbot, which does not exist
+# in the upstream image. Prefer /builder; fall back to a find as a
+# safety net for derivative images that lay it out differently.
+if [ -f /builder/Makefile ]; then
+    cd /builder
+else
+    IB_MAKEFILE=$(find / -maxdepth 4 -name Makefile -path '*builder*' 2>/dev/null | head -1)
+    if [ -n "$IB_MAKEFILE" ]; then
+        cd "$(dirname "$IB_MAKEFILE")"
+    else
+        echo "ERROR: ImageBuilder Makefile not found in container" >&2
+        exit 1
+    fi
+fi
 echo "    PWD=$(pwd)"
 
 # Confirm the Mango profile exists in this ImageBuilder
@@ -80,10 +94,15 @@ if ! make info | grep -q "^$PROFILE:"; then
     exit 1
 fi
 
+# Flatten PACKAGES to a single space-separated line. ImageBuilder reconstructs
+# `bash -c "...$(PACKAGES)..."` internally; embedded newlines from a multi-line
+# shell heredoc-style PACKAGES variable break that bash quoting.
+PACKAGES_FLAT=$(printf '%s' "$PACKAGES" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
+
 # Build
 make image \
     PROFILE="$PROFILE" \
-    PACKAGES="$PACKAGES" \
+    PACKAGES="$PACKAGES_FLAT" \
     EXTRA_IMAGE_NAME="$IMAGE_NAME" \
     FILES="$FILES_DIR"
 
@@ -134,5 +153,14 @@ EOF
 
 # Copy artifacts to OUTPUT_DIR for easy student access
 cp "$BIN_PATH" "$OUTPUT_DIR/"
+
+# Also copy the package .manifest produced by ImageBuilder so Lab 02's
+# Step 4 ("Compare to upstream rootfs") can read the resolved package
+# list directly from $OUTPUT_DIR/ without traversing into bin/targets/.
+MFST_PATH=$(find bin -type f -name "*${PROFILE}*.manifest" | head -1)
+if [ -n "$MFST_PATH" ] && [ -f "$MFST_PATH" ]; then
+    cp "$MFST_PATH" "$OUTPUT_DIR/"
+fi
+
 echo ">>> artifacts in $OUTPUT_DIR/"
 ls -la "$OUTPUT_DIR/"

@@ -3,4 +3,7 @@ services:
     build: .
     volumes:
       - .:/labs
-      - ./output:/home/buildbot/openwrt-imagebuilder/bin
+      # Match the upstream image's ImageBuilder root: /builder (NOT
+      # /home/buildbot/openwrt-imagebuilder, which doesn't exist in
+      # openwrt/imagebuilder:ramips-mt76x8-23.05.3 as of 2026-05-04).
+      - ./output:/builder/bin
