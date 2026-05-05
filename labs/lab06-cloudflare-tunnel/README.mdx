@@ -537,6 +537,39 @@ Run `validate.sh` anywhere, copy the full output, paste it into the widget below
 
 ---
 
+## Primitives and drop-in substitutes
+
+Cloudflared connects an origin to Cloudflare's edge over a long-lived outbound connection so you can serve HTTPS without opening an inbound port. The primitive itself predates Cloudflare Tunnel by decades. SSH `-R` is the smallest case; managed SaaS like ngrok and self-hosted tools like frp are the broad middle. The substitution surface is mostly about who runs the public exit, who terminates TLS, and what the wire protocol is.
+
+| Name | Model | License | When to consider it |
+|------|-------|---------|---------------------|
+| **frp** (fatedier) | self-hosted; client + server binaries; TCP/UDP/HTTP(S) | Apache-2.0 | the canonical OSS tunnel; you run `frps` on a VPS, `frpc` on the origin |
+| **rathole** | self-hosted; Rust rewrite of frp's wire model | MIT/Apache-2.0 | when frp's resource overhead matters; smaller binary, faster |
+| **chisel** (jpillora) | self-hosted; HTTP-tunneled TCP/UDP multiplexer; single binary | MIT | when you want a single Go binary for both sides and do not need frp's full config surface |
+| **boringproxy** | self-hosted; built around HTTPS reverse-proxy with automatic TLS | MIT | when you specifically want Let's Encrypt baked in at the server side |
+| **bore** (ekzhang) | minimal; Rust; one-shot tunnels over TCP | MIT | for one-off port forwarding, like `ssh -R` but without needing an SSH server |
+| **ngrok** | managed SaaS; cloud edge | proprietary | demos and dev/preview environments; generous free tier |
+| **localtunnel** | managed; minimal Node.js client | MIT | smoke tests and CI; simpler invocation than ngrok, no account required |
+| **inlets PRO** | client + server you run; aimed at Kubernetes ingress | MIT (OSS) / proprietary (PRO) | when running Kubernetes ingress through a tunnel |
+| **Tailscale Funnel** | exposes a tailnet service to the public internet | proprietary (Tailscale) | when you already run Tailscale; Funnel is a feature on top of the mesh from Lab 05 |
+| **WireGuard with port-forward at exit** | mesh primitive applied to egress through a known peer | GPL-2.0 | when you want full network reachability rather than just HTTP(S) forwarding |
+| **SSH `-R`** | bog-standard reverse port forward | OpenSSH (BSD) | when both ends already have SSH and you do not need TLS termination at the public end |
+
+```
+client ──HTTPS──> public exit <── persistent outbound ── origin
+                 (CF edge /                            (cloudflared /
+                  frps /                                frpc /
+                  ngrok)                                rathole / bore)
+```
+
+The public exit owns TLS termination in every managed-SaaS row above. With self-hosted tools (frp, rathole, chisel, boringproxy), you bring your own certificate or wire up an ACME client at the exit server. SSH `-R` and WireGuard defer TLS entirely to the application layer.
+
+### Take-home prompt
+
+Run an `frp` server on a $5 VPS and rerun Lab 06 against your own exit. Compare TLS termination: Cloudflare Tunnel gives you their certificate chain; `frps` requires your own ACME flow (certbot or the built-in TLS support in newer frp releases). Then try `bore` for the same thing in a one-line invocation and compare the setup cost.
+
+---
+
 ## Further reading
 
 **Cloudflare Tunnel:**

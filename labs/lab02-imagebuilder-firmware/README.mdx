@@ -429,6 +429,49 @@ expanded post-workshop.
 
 ---
 
+## Primitives and drop-in substitutes
+
+OpenWrt's ImageBuilder is one implementation of a wider primitive: declarative
+firmware assembly. You name a target, a profile, a package list, and a file
+overlay; the toolchain produces a flashable artifact with a known size and a
+reproducible hash. The package selection is the engineering exercise; the
+toolchain that performs the assembly is interchangeable.
+
+The table below maps that primitive to its closest equivalents across
+the embedded and systems-Linux landscape. Each tool accepts a declarative
+description of what should be in an image and outputs a bootable artifact.
+The variables are: what the "declaration" looks like, how the output is
+constrained, and who the upstream maintainer is.
+
+| Name | Model | License | When to consider it |
+|---|---|---|---|
+| OpenWrt full source build (`make image`) | Source-from-scratch; full toolchain compiles every package from C | GPL-2.0 | When ImageBuilder's pre-compiled feed is missing a patch you need; when developing OpenWrt itself |
+| Yocto Project / OpenEmbedded | Layered recipes assembled by BitBake; each layer can override any earlier layer | MIT (framework); various (generated binaries) | Industrial and commercial embedded products; vendors supply BSP layers for their SoCs |
+| Buildroot | Declarative `defconfig` + Makefile; no package manager in the final image | GPL-2.0 | Smallest possible custom Linux; dev-board and appliance firmware with no runtime package management |
+| Alpine Linux + apk + initramfs | apk packages assembled into a custom rootfs via `mkimage`/`mkinitfs` | MIT (apk-tools) | x86 / ARM appliance images; container base images where musl libc is acceptable |
+| Debian debootstrap + custom kernel | `debootstrap` extracts a base, then on-host `apt` installs packages into a chroot | GPL/various | Targets with glibc and no flash constraint; common for SBCs (Raspberry Pi, BeagleBone) |
+| mkosi | Declarative spec file (`.conf`) builds systemd-native images; outputs raw, GPT, or OCI | LGPL-2.1+ | Targets running systemd; the operator console Dev Container is a natural fit |
+| OpenWrt-derivative distros (DD-WRT, FriendlyWrt, Padavan) | OpenWrt fork with vendor-specific patches and package sets | GPL-2.0 (mostly) | When the vendor's tree carries drivers or features that mainline OpenWrt lacks for specific hardware |
+
+```
+package feed / sources
+        │
+        ▼
+assembly tool (ImageBuilder / Yocto / Buildroot / mkosi / debootstrap)
+        │
+        ├── size constraint applied (NOR ceiling, eMMC budget, container layer limit)
+        │
+        ▼
+image artifact  ──►  SHA256 hash  ──►  reproducibility check
+```
+
+**Take-home prompt.** Pick a target on your shelf (RPi 4, an old PC with a
+32 GB SSD, a dev board) and rebuild the equivalent of the drop-mango package
+list using one of the tools above. Compare the resulting artifact size, the
+hash-reproducibility properties, and the wall-clock time to first usable byte.
+
+---
+
 ## Further reading
 
 **ImageBuilder and reproducibility:**

@@ -375,6 +375,40 @@ the widget below.
 
 ---
 
+## Primitives and drop-in substitutes
+
+Lab 04 verifies two primitives that happen to share a vendor here. The first is authoritative DNS: who answers queries for `eplabs.cloud` (Cloudflare in this course; could just as well be Bind9 on a VPS). The second is cloud-platform identity: who recognizes your API token and lets you provision D1, KV, R2 (Cloudflare here; could be AWS, GCP, Fly, or self-hosted). Day 2's labs assume both are reachable; if a client constraint moves you off Cloudflare, you swap each half independently.
+
+### DNS authority substitutes
+
+| Name | Model | License | When to consider it |
+|------|-------|---------|---------------------|
+| **Bind9** | classic authoritative DNS server | MPL-2.0 | self-hosted on a VPS; widest feature set |
+| **NSD** (NLnet Labs) | authoritative-only, no recursion | BSD-3-Clause | minimal attack surface; pairs with Unbound for recursion |
+| **PowerDNS Authoritative** | SQL-backed authoritative server | GPL-2.0 | when you want zone data in Postgres or MySQL |
+| **Knot DNS** (CZ.NIC) | authoritative-only, modern | GPL-3.0 | high throughput; widely used at TLD operators |
+| **Route 53** (AWS) | managed, anycast | proprietary | when the rest of your platform is on AWS |
+| **Google Cloud DNS** | managed, anycast | proprietary | GCP-aligned shops |
+| **deSEC** | free public managed DNS, REST API | non-profit / free tier | when you want managed DNS without a large vendor |
+| **Tailscale MagicDNS** | private DNS for tailnet only | proprietary | when "DNS" in your stack means tailnet hostnames, not public records |
+
+### Cloud-platform and API entitlement substitutes
+
+| Name | Model | When to consider it |
+|------|-------|---------------------|
+| **AWS** (DynamoDB / S3 / Lambda / API Gateway) | mature, broad, expensive | enterprise alignment |
+| **GCP** (Firestore / GCS / Cloud Functions / Cloud Run) | similar shape to AWS, different pricing model | GCP-aligned organizations |
+| **Fly.io** (Postgres, S3-compatible storage, Machines) | container-first, region-pinning | when you want a closer-to-the-metal VM model |
+| **Supabase** (Postgres / Storage / Edge Functions) | Postgres-first, opinionated | when relational data is the core |
+| **PocketBase** (single-binary BaaS, self-hosted) | SQLite plus auth plus realtime | edge or embedded; small deployments |
+| **Self-hosted: Postgres + MinIO + nginx + a Go or Rust HTTP server** | the "no platform" baseline | when you must own every layer |
+
+### Take-home prompt
+
+Take one half of the stack and re-host it. Easy mode: move DNS authority to deSEC for `<your-handle>.eplabs.cloud` and observe the propagation delay. Harder: stand up a small self-hosted Worker-equivalent (workerd or a Go HTTP handler on a VPS) and re-run the Lab 07 health-endpoint exercise against it.
+
+---
+
 ## Further reading
 
 **Cloudflare DNS and zones:**

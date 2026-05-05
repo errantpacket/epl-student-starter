@@ -953,6 +953,39 @@ See [`take-home/README.md`](take-home/README.md) for a pointer to the MT3000 tou
 
 ---
 
+## Primitives and drop-in substitutes
+
+The Mango ships with `u-boot_mod` and OpenWrt failsafe, but the recovery primitive
+itself is older than either. Every embedded device has a layered recovery story: a
+bootloader that can be entered before the OS runs, a watchdog or fallback path baked
+into the OS itself, and a hardware-level interface (UART, JTAG) that bypasses both.
+Once you understand it that way, substituting the per-vendor specifics is mostly a
+matter of looking up which path each layer uses on the new hardware.
+
+| Name | Layer | Where it ships | When to consider it |
+|------|-------|----------------|---------------------|
+| Mainline U-Boot + TFTP recovery | bootloader | most non-GL.iNet OpenWrt devices, RPi-class boards | the canonical alternative when `u-boot_mod` is absent; expects a TFTP server (`tftpd-hpa`) on the host LAN |
+| Vendor stock recovery web UIs | bootloader / OS | most consumer routers (TP-Link, ASUS, Netgear) | first thing to try on unfamiliar hardware; trigger and host setup documented in the vendor manual |
+| JTAG / SWD + OpenOCD | sub-bootloader | most ARM SoCs, some MIPS | when serial is dead or the bootloader itself is corrupted; needs a debug probe (Tigard, J-Link, or Black Magic Probe) |
+| esptool.py | bootloader | Espressif ESP32 / ESP8266 family | the `u-boot_mod` equivalent on a different SoC family; ROM boot mode over USB or UART |
+| rkdeveloptool | bootloader | Rockchip SoCs (RK3399, RK3588) | for SBC-class hardware; loads images over USB in maskrom / bootrom mode |
+| kwboot | bootloader | Marvell Armada / Kirkwood (older NAS hardware) | drops a replacement U-Boot over UART when even the existing bootloader is gone |
+| OpenWrt failsafe (network path) | OS | every OpenWrt device | the telnet-on-192.168.1.1 path Step 6 documents but does not exercise; useful when serial is unavailable and only a network connection is at hand |
+| Raspberry Pi bootcode / RPIBOOT | bootloader | Raspberry Pi (all models with BCM283x or RP1) | USB-connected bootrom mode; can load a full image from a host PC when the SD card or eMMC is unreadable |
+
+### Take-home prompt
+
+Pick a non-GL.iNet OpenWrt device from the [OpenWrt Table of Hardware][toh],
+find its device page, and document the equivalent of Lab 01's Steps 6 and 7:
+what key or button triggers OS-layer failsafe, and what mechanism (HTTP, TFTP,
+serial console interrupt) the bootloader exposes for firmware recovery. Note
+the trigger threshold and the host-side requirements, and compare them to the
+Mango's 5-second reset-hold and browser-accessible HTTP form.
+
+[toh]: https://openwrt.org/toh/start
+
+---
+
 ## Further reading
 
 Lab 01's surface is broad on purpose: recovery, hardware, and two operating

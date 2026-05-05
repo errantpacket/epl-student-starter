@@ -520,6 +520,57 @@ export STUDENT=yourname
 
 ---
 
+## Primitives and drop-in substitutes
+
+Tailscale is this lab's specific mesh implementation. The primitive it delivers decomposes into four substitutable layers. WireGuard is the data plane and the de-facto standard across the mesh-VPN landscape. The control plane governs who belongs to the mesh and what each peer can reach. The relay plane provides a TCP-based fallback when direct UDP between peers fails. MagicDNS-style name resolution is the fourth, optional, layer that maps peer hostnames to tailnet addresses. If a client network blocks Tailscale specifically, the WireGuard data plane usually continues to work; what you swap is one of the upper layers.
+
+```
+                  ┌───────────────┐
+   PEERS  ←────→  │  DATA PLANE   │  ← WireGuard (kernel module or userspace)
+                  └───────────────┘
+                         ↑
+                         │ keys, peer list, ACL
+                         ↓
+                  ┌───────────────┐
+                  │ CONTROL PLANE │  ← Tailscale coordinator | headscale | Innernet | NetBird
+                  └───────────────┘
+                         ↑
+                         │ when direct UDP fails
+                         ↓
+                  ┌───────────────┐
+                  │  RELAY PLANE  │  ← DERP (Tailscale) | self-hosted DERP | Nebula lighthouse
+                  └───────────────┘
+                         ↑
+                         │ optional
+                         ↓
+                  ┌───────────────┐
+                  │  NAME SERVICE │  ← MagicDNS | headscale DNS | split-DNS resolver
+                  └───────────────┘
+```
+
+### Substitutes
+
+| Name | Layer covered | License | When to consider it |
+|---|---|---|---|
+| **WireGuard** (raw kernel module + wireguard-tools) | data plane only | GPL-2.0 (kernel module); Apache-2.0 (wireguard-tools) | full manual control of keys and routing; configure peer lists yourself or via a tool below |
+| **wireguard-go** | data plane only (userspace Go implementation) | MIT | when the kernel module is unavailable; same protocol, slower throughput |
+| **boringtun** (Cloudflare) | data plane only (userspace Rust implementation) | BSD-3-Clause | Tailscale uses this on platforms without kernel WireGuard; standalone when you want userspace without Go |
+| **headscale** | control plane (Tailscale-compatible coordinator) | BSD-3-Clause | run your own coordinator; stock Tailscale clients point at your headscale URL; ACL model is hujson-compatible |
+| **Innernet** (tonarino) | control plane + data plane (WireGuard) | MIT | self-hosted; CIDR-aware ACLs; the simplest path to a fully self-contained mesh |
+| **Nebula** (Slack/Defined Networking) | control plane + data plane (Noise Protocol, not WireGuard) | MIT | certificate-based identity; lighthouse nodes replace DERP; different trust model from Tailscale; used at scale internally at Slack |
+| **NetBird** | control plane + data plane (WireGuard) | AGPLv3 (server components: management, signal, relay); BSD-3-Clause (clients) | self-hosted Tailscale-like coordinator with built-in SSO; note license split as of v0.53 (Aug 2025) |
+| **ZeroTier** | control plane + data plane (proprietary L2-over-UDP) | BSL-1.1 | Layer-2 emulation across the overlay; older projects already using it; check the BSL commercial-use terms before adopting |
+| **Defined Networking** (Managed Nebula) | hosted control plane for Nebula | proprietary | run Nebula without operating your own CA or lighthouse; Defined Networking handles enrollment and certificate rotation |
+| **OpenZiti** | control plane + data plane (mTLS over TCP/UDP) | Apache-2.0 | identity-first; all traffic is application-layer; different shape from WireGuard mesh; NetFoundry sponsors ongoing development |
+| **Cloudflare WARP** (client app) | userspace WireGuard client to Cloudflare gateway | proprietary | near-miss: routes client traffic to Cloudflare's edge, not peer-to-peer; useful as a client-egress primitive, not a mesh substitute |
+| **OpenVPN** | data plane + simple control | GPL-2.0 | pre-WireGuard era; cite as a historical reference when auditing legacy configurations, not as a recommended substitute |
+
+### Take-home prompt
+
+Stand up `headscale` on a VPS or a local systemd-nspawn container, reconfigure your operator console's `tailscaled` to point at the headscale URL, and re-run the Lab 05 enrollment steps against your own coordinator. Compare the user model: Tailscale's OAuth-backed admin console and ACL hujson versus headscale's CLI-managed users and namespaces. For an alternative track, replace the data plane entirely: generate raw WireGuard keypairs with `wg genkey` / `wg pubkey`, write a minimal `wg-quick` config for each peer, bring up the interface with `wg-quick up`, and verify direct reachability without any coordinator.
+
+---
+
 ## Further reading
 
 **Tailscale upstream:**

@@ -429,6 +429,35 @@ View the Worker source this lab deploys:
 
 ---
 
+## Primitives and drop-in substitutes
+
+Cloudflare Workers are V8 isolates running on Cloudflare's edge: an HTTP request lands at a point of presence, a JS function runs in milliseconds, a response leaves. The primitive itself is broader than that. Edge compute decomposes into an isolation model (V8 isolates, WASM modules, microVMs, containers), a runtime API (Web standards plus per-platform extensions like KV bindings), and a deployment model (managed cloud, self-hosted runtime, or plain VPS with a CDN in front). Each axis has substitutes.
+
+Understanding those axes means you can swap providers when a client blocks Cloudflare, when a vendor deprecates an API, or when a self-hosted option fits better than a managed one.
+
+### Substitutes
+
+| Name | Isolation model | Deployment | License | When to consider it |
+|---|---|---|---|---|
+| **Vercel Edge Functions** | V8 isolates | managed cloud | proprietary | closest API peer to Workers; same Web-standards runtime |
+| **Deno Deploy** | V8 isolates | managed cloud | proprietary (runtime: Apache-2.0) | when you want Deno semantics (TS-native, npm via specifiers); same isolation model |
+| **AWS Lambda@Edge** | full Node.js / Python runtime per-invocation | managed cloud | proprietary | when you are AWS-aligned; slower cold starts than V8 isolates |
+| **AWS CloudFront Functions** | small JS subset, very limited | managed cloud | proprietary | for trivial header/URL rewrites at AWS edge |
+| **Fastly Compute@Edge** | WASM (Wasmtime) | managed cloud | proprietary | when you want WASM as the runtime; non-JS languages with Compute SDKs |
+| **Netlify Edge Functions** | Deno (V8) | managed cloud | proprietary | similar to Deno Deploy with Netlify integration |
+| **workerd** | V8 isolates (Cloudflare's open-source runtime) | self-hosted | Apache-2.0 | the same code Workers runs, in your own datacenter; needs a frontend (e.g., a CDN or load balancer) |
+| **miniflare** | V8 (uses workerd under the hood) | local dev | MIT | local Worker development without deploying |
+| **Bun.serve / Hono on a VPS** | Node-style runtime with Web-standards Request/Response | self-hosted | MIT | when "edge compute" means a Go/Rust/Bun handler on one VPS |
+| **OpenFaaS** | container per function | self-hosted Kubernetes | MIT | when you have Kubernetes and want function-style deployment without per-PoP topology |
+| **Knative Serving** | container, scale-to-zero | self-hosted Kubernetes | Apache-2.0 | the upstream "serverless on Kubernetes" pattern |
+| **Wasmer Edge / wasmCloud** | WASM | mixed | Apache-2.0 | when WASM-everywhere is a goal of your platform |
+
+### Take-home exercise
+
+Take Lab 07's `/health` handler and redeploy it on (a) Deno Deploy, (b) workerd on a VPS behind Caddy, (c) a single Bun process behind nginx. Measure cold-start latency from three different clients. The contrast is the primitives map: same handler, three platforms, three pricing models, three operational shapes.
+
+---
+
 ## Further reading
 
 **Cloudflare Workers:**

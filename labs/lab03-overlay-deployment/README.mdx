@@ -645,6 +645,64 @@ expanded post-workshop.
 
 ---
 
+## Primitives and drop-in substitutes
+
+OpenWrt's ExtRoot mounts a USB drive as the filesystem overlay so `opkg`
+installs land on USB rather than NOR. The primitive itself is older and more
+general: a read-only lower layer, a writable upper layer, and a kernel driver
+that merges them at the VFS layer. Linux has shipped `overlayfs` since 3.18
+(2014); `block-mount` and UCI fstab are OpenWrt-specific glue that automate
+the mount. The substitution surface is mostly about how the upper and lower
+layers are sourced, persisted, and reset.
+
+### Overlay structure
+
+```
++------------------------------+
+|   merged view (/)            |  <- what processes see
++------------------------------+
+| upper: /mnt/usb (ext4)       |  <- writes land here (this lab)
+| lower: /rom    (squashfs)    |  <- read-only, NOR-resident
++------------------------------+
+           ^       ^
+           |       |
+      kernel overlayfs driver
+```
+
+### Substitutes
+
+| Name | Model | When to consider it |
+|------|-------|---------------------|
+| Linux `overlayfs` (raw) | manual mount: `lower=/`, `upper=/mnt/usb`, `work=/mnt/usb-work`, `merged=/overlay` | non-OpenWrt embedded Linux with a small rootfs and a writable partition; what `block-mount` automates |
+| `aufs` | older multi-layer union FS | historical reference only; unmaintained upstream; do not use for new work |
+| Initramfs unpack-then-overlay | initramfs is the lower; tmpfs or block device is the upper; standard on systemd boot | no NOR/NAND constraint but a clean reboot to a known state is desired |
+| btrfs subvolume + snapshot | block-level copy-on-write; immutable base subvolume + writable subvolume | larger storage substrate (SBC, appliance); per-snapshot rollback available |
+| ZFS dataset + snapshot | similar to btrfs; mature on FreeBSD and Linux | servers with substantial storage; not appropriate for 16 MB NOR |
+| OSTree (libostree) | git-style commit tree of filesystems; atomic upgrades | immutable-OS distributions (Fedora Silverblue, Endless OS) |
+| Container image layers | overlay2 driver in Docker or Podman | the closest parallel to this lab: a multi-layer base plus a writable container layer is `overlayfs` under the hood |
+| A/B partition rollback | two full rootfs slots with a boot-time selector | Android, ChromeOS, automotive firmware; not a "grow rootfs" primitive but addresses the same "recover a bad upgrade" problem |
+
+### Take-home prompt
+
+On your laptop, mount a tmpfs as the upper layer over `/usr/share` (lower)
+and use a workdir under `/var/tmp`. Install a small package via `apt` while
+the overlay is active and observe where the writes land. Unmount the overlay
+and confirm the base `/usr/share` is unchanged. Minimal setup:
+
+```sh
+sudo mkdir -p /var/tmp/overlay-upper /var/tmp/overlay-work /mnt/overlay-test
+sudo mount -t overlay overlay \
+  -o lowerdir=/usr/share,upperdir=/var/tmp/overlay-upper,workdir=/var/tmp/overlay-work \
+  /mnt/overlay-test
+ls /mnt/overlay-test        # merged view
+# write a file and check it appears in /var/tmp/overlay-upper, not /usr/share
+sudo umount /mnt/overlay-test
+ls /var/tmp/overlay-upper   # writes are here
+ls /usr/share/$(ls /var/tmp/overlay-upper | head -1) 2>/dev/null || echo "not in base"
+```
+
+---
+
 ## Further reading
 
 **ExtRoot and storage:**
