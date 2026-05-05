@@ -39,6 +39,7 @@ PACKAGES="
   fstools libc libgcc libustream-mbedtls logd mtd netifd opkg uci
   uclient-fetch urandom-seed urngd
   block-mount kmod-usb-storage kmod-usb3 kmod-fs-ext4 e2fsprogs
+  fdisk
   curl jsonfilter
   tcpdump-mini
   -ppp -ppp-mod-pppoe
@@ -47,6 +48,10 @@ PACKAGES="
   -dnsmasq -firewall4 -nftables -kmod-nft-offload
   -luci -luci-base -luci-mod-admin-full -luci-theme-bootstrap
 "
+# Note: `fdisk` (~50 KB) is included so Lab 03 Step 3's partition path
+# works on a freshly-flashed Mango with a blank USB drive. Without it,
+# `fdisk: not found` blocks the lab. Default util-linux fdisk; no busybox
+# applet provides it.
 
 echo ">>> drop-mango build"
 echo "    PROFILE=$PROFILE"

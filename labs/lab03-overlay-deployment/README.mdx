@@ -213,7 +213,9 @@ laptop.
 ```sh
 # Copy the image to Mango RAM. /tmp is a ramdisk; it survives while the
 # Mango is running but is wiped on reboot.
-scp "$BIN" root@192.168.8.1:/tmp/sysupgrade.bin  # stock GL.iNet; pure-OpenWrt is 192.168.1.1
+# `-O` forces legacy SCP transfer; OpenSSH 9.0+ defaults to SFTP, which
+# the Mango's dropbear does not provide.
+scp -O "$BIN" root@192.168.8.1:/tmp/sysupgrade.bin  # stock GL.iNet; pure-OpenWrt is 192.168.1.1
 
 # Verify the copy. Both checksums must match before flashing.
 sha256sum "$BIN"
@@ -225,9 +227,41 @@ ssh root@192.168.8.1 'sysupgrade -n /tmp/sysupgrade.bin'  # stock GL.iNet; pure-
 # Wait 90 seconds for flash + reboot to complete.
 ```
 
+> **Why `scp -O`?** OpenSSH 9.0+ uses SFTP for `scp` by default. The
+> Mango's dropbear does not ship `sftp-server`, so the unflagged `scp`
+> fails with `ash: /usr/libexec/sftp-server: not found`. The `-O` flag
+> forces the legacy SCP protocol which dropbear handles natively.
+
+#### After the flash: laptop static IP
+
+The Lab 02 firmware deliberately **omits dnsmasq, firewall4, and nftables**
+because the Mango is a drop device, not a router. With dnsmasq absent,
+the Mango does not run a DHCP server on its LAN port, so your laptop
+cannot auto-configure when you replug after the flash. Set a static IP
+on your laptop's wired interface before the next step:
+
+```sh
+# Linux (replace enp2s0 with your interface name; check with `ip -o link`)
+sudo nmcli device disconnect enp2s0
+sudo ip addr add 192.168.1.2/24 dev enp2s0
+sudo ip link set enp2s0 up
+
+# macOS (replace en0 with your active wired interface; check with `ifconfig`)
+sudo ifconfig en0 192.168.1.2 netmask 255.255.255.0
+
+# Windows (PowerShell as Administrator; replace alias with your wired adapter)
+New-NetIPAddress -InterfaceAlias "Ethernet" -IPAddress 192.168.1.2 -PrefixLength 24
+```
+
+Confirm the laptop can now reach the Mango:
+
+```sh
+ping -c 2 192.168.1.1
+```
+
 After the reboot, the Mango runs pure OpenWrt 23.05.3 at `192.168.1.1`
-(upstream default; no GL.iNet overlay). The root password is empty on first
-boot. Set one immediately or install your SSH public key:
+(upstream default; no GL.iNet overlay). The root password is empty on
+first boot. Set one immediately or install your SSH public key:
 
 ```sh
 ssh root@192.168.1.1   # empty password on first connect
@@ -454,35 +488,143 @@ filesystem created in Step 4.
 <LabStep lab="lab03" id="packages" num={7} title="Install packages onto ExtRoot">
 
 With `/overlay` on the USB drive, the available package space is limited
-only by the drive size. Install the two packages that could not fit in
-NOR:
+only by the drive size. The two packages that could not fit in NOR are
+`tailscale` and `python3-light`. You install them **offline** from a
+.ipk bundle staged on your laptop.
+
+#### Why offline (and not `opkg update && opkg install ...`)?
+
+The Mango's drop firmware excludes `dnsmasq`, `firewall4`, and
+`nftables` because the Mango is a drop device, not a router. As a
+result, the Mango has no DHCP client on its LAN side, no NAT, and (with
+only the LAN cable plugged in) **no internet**. Running `opkg update`
+on the Mango at this point fails with `Network unreachable`.
+
+Setting up internet for the Mango means either:
+
+- A second Ethernet cable from the Mango's WAN port to your home
+  router, OR
+- Configuring your laptop as a NAT gateway (different setup on Linux,
+  macOS, and Windows; brittle in classroom networks).
+
+Both paths add support friction. The cleaner approach is to stage the
+`.ipk` files on your laptop ahead of time and copy them to the Mango.
+Practical wins:
+
+- **No internet on the Mango required.** Your laptop already has
+  internet (that is how you cloned the repo); the Mango never needs
+  to talk to the OpenWrt feeds directly.
+- **OS-agnostic.** Every laptop has Python and `curl`; per-OS NAT
+  setup does not.
+- **Reproducible.** The same script on the same day produces identical
+  bytes. Pinned through opkg's `Filename:` index column and recorded
+  with SHA256 sums in the bundle's `manifest.json`.
+- **Real-world drop-device pattern.** Operators who deploy embedded
+  hardware to constrained networks routinely build an offline package
+  bundle on a staging host, then sneakernet it onto the device. Lab
+  12 reuses exactly this pattern when it bakes secrets into the
+  Mango image.
+- **Audit-friendly.** Every binary that lands on the Mango passes
+  through your laptop, where you can hash, sign, or scan it before
+  deploy. The pattern generalizes: you control what goes on the drop
+  device.
+
+#### Build the offline bundle
+
+The `cache-mango-ipks.py` helper in `tools/` resolves the `tailscale +
+python3-light + fdisk` dependency closure against the OpenWrt 23.05.3
+feeds and downloads the `.ipk` files to `labs/output/ipks/`.
 
 ```sh
-ssh root@192.168.1.1 'opkg update && opkg install tailscale python3-light'
+# From the course root, on the laptop (or operator console):
+cd courses/engagement-platform-labs
+uv run tools/cache-mango-ipks.py
+# Bundle lands in labs/output/ipks/ with a manifest.json
 ```
 
-`tailscale` and `python3-light` are in the OpenWrt 23.05.3 feed for
-`mipsel_24kc`. The feed URL is already correct in the NOR image built by
-Lab 02.
+Expected output (sizes will match across students on the same day):
 
-> **Why isn't cloudflared installed on the Mango?** Earlier versions of
-> this lab included a `cloudflared` install step. Cloudflare does not
+```
+[cache] resolving dependency closure...
+  8 packages in closure (excluding NOR baseline)
+    tailscale          1.58.2-1
+    python3-light      3.11.7-1
+    fdisk              2.39-2
+    kmod-tun           5.15.150-1
+    python3-base       3.11.7-1
+    libbz2-1.0         1.0.8-1
+    zlib               1.2.13-1
+    libpython3-3.11    3.11.7-1
+[cache] done: 8 .ipk(s), 12201 KB total
+```
+
+The `manifest.json` records each package's name, version, size, and
+SHA256 so two students can compare bundles in one diff.
+
+#### Install offline
+
+Copy the bundle to the Mango's `/tmp` (a ramdisk; cleaned on reboot,
+which is what we want for a transient install staging area):
+
+```sh
+scp -O labs/output/ipks/*.ipk root@192.168.1.1:/tmp/
+```
+
+Then run a single `opkg install` against the local `.ipk` paths. opkg
+resolves the install order from the package metadata; you do not need
+to install dependencies first:
+
+```sh
+ssh root@192.168.1.1 'cd /tmp && opkg install *.ipk'
+```
+
+Expected (truncated):
+
+```
+Installing libbz2-1.0 (1.0.8-1) to root...
+Installing libpython3-3.11 (3.11.7-1) to root...
+Installing python3-base (3.11.7-1) to root...
+Installing python3-light (3.11.7-1) to root...
+Installing zlib (1.2.13-1) to root...
+Installing kmod-tun (5.15.150-1) to root...
+Installing tailscale (1.58.2-1) to root...
+Configuring libbz2-1.0.
+Configuring libpython3-3.11.
+Configuring python3-base.
+Configuring zlib.
+Configuring python3-light.
+Configuring kmod-tun.
+Configuring tailscale.
+```
+
+Tailscale's post-install scriptlet may emit harmless `bootstrapDNS`
+errors as it tries to phone home for log upload. Those are not install
+failures and are safe to ignore at this stage.
+
+Clean up the staging copy from the Mango's ramdisk:
+
+```sh
+ssh root@192.168.1.1 'rm /tmp/*.ipk'
+```
+
+> **Why isn't cloudflared installed on the Mango?** Cloudflare does not
 > publish a `mipsel` release binary (only `linux-386 / amd64 / arm /
 > arm64 / armhf`), and after the May 2026 architecture pivot the
-> Cloudflare Tunnel terminates at the **operator console** (Debian, with
-> cloudflared from the Cloudflare apt repo) rather than on the Mango.
-> The Mango reaches the operator console over Tailscale; the public
-> tunnel does not need a Mango-side `cloudflared` daemon. See Lab 06
-> for the tunnel architecture.
+> Cloudflare Tunnel terminates at the **operator console** (Debian,
+> with cloudflared from the Cloudflare apt repo) rather than on the
+> Mango. The Mango reaches the operator console over Tailscale; the
+> public tunnel does not need a Mango-side `cloudflared` daemon. See
+> Lab 06 for the tunnel architecture.
 
 Verify the installs:
 
 ```sh
 ssh root@192.168.1.1 'tailscale --version'
-# tailscale version X.Y.Z go...
+# 1.58.2
+#   go version: go1.21.13
 
 ssh root@192.168.1.1 'python3 --version'
-# Python 3.x.y
+# Python 3.11.7
 ```
 
 Both must return non-empty output before proceeding to the Validation
