@@ -92,7 +92,7 @@ Before starting this lab confirm:
 # Lab 01 is complete: SSH to the Mango works.
 # (Skip this check if you are running Lab 02 ahead of bench access; the
 # build itself does not need the Mango to be reachable.)
-ssh -o ConnectTimeout=5 root@<span data-profile-ip>192.168.8.1</span> 'echo ok'
+ssh -o ConnectTimeout=5 root@192.168.8.1 'echo ok'   # stock GL.iNet; use 192.168.1.1 for pure-OpenWrt
 
 # Docker is reachable from your operator console (this is the inner DinD
 # daemon in Codespace / Local Dev Container, or your host docker for

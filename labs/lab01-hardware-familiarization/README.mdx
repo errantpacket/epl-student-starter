@@ -267,8 +267,9 @@ receive):
 # Open in browser: http://192.168.8.1
 
 # SSH. Stock GL.iNet firmware has SSH enabled on LAN by default.
-ssh root@<span data-profile-ip>192.168.8.1</span>
-# Default password: <span data-profile-password>goodlife</span>  (printed on device label)
+# Stock GL.iNet default LAN: 192.168.8.1. Pure-OpenWrt default: 192.168.1.1.
+# Default password: goodlife (printed on label; pure-OpenWrt has empty default, set with `passwd`)
+ssh root@192.168.8.1
 ```
 
 > **Pre-flashed and pure-OpenWrt units.** If your Mango was previously flashed with
@@ -566,7 +567,7 @@ sibling launched in Step 4b:
 
 ```sh
 # Terminal 1: Mango (the SSH from Step 2)
-ssh root@<span data-profile-ip>192.168.8.1</span>
+ssh root@192.168.8.1   # stock GL.iNet; use 192.168.1.1 for pure-OpenWrt
 
 # Terminal 2: OpenWrt sibling (running inside the operator console via DinD)
 openwrt-shell
@@ -830,7 +831,7 @@ sudo nmcli device connect enp2s0
 Confirm SSH to the Mango is back via DHCP'd address:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span>   # or 192.168.1.1 for pre-flashed units
+ssh root@192.168.8.1   # stock GL.iNet; use 192.168.1.1 for pre-flashed units
 ```
 
 #### Threshold map (verified)
@@ -869,8 +870,8 @@ determined by the vendor U-Boot, not by OpenWrt itself.
 
 When this lab is complete you should be able to answer yes to all of the following:
 
-- [ ] `ssh root@<span data-profile-ip>192.168.8.1</span>` connects and shows the Mango shell prompt.
-      {/* 192.168.1.1 for pre-flashed pure-OpenWrt units; see Step 2 note. */}
+- [ ] `ssh root@192.168.8.1` (or `192.168.1.1` for pure-OpenWrt units)
+      connects and shows the Mango shell prompt.
 - [ ] `cat /etc/openwrt_release` on the Mango shows `DISTRIB_ID="OpenWrt"`
       (or `'OpenWrt'` on 23.05+ units, with single quotes; both accepted by
       validate.sh).

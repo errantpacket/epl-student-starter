@@ -210,15 +210,15 @@ laptop.
 ```sh
 # Copy the image to Mango RAM. /tmp is a ramdisk; it survives while the
 # Mango is running but is wiped on reboot.
-scp "$BIN" root@<span data-profile-ip>192.168.8.1</span>:/tmp/sysupgrade.bin
+scp "$BIN" root@192.168.8.1:/tmp/sysupgrade.bin  # stock GL.iNet; pure-OpenWrt is 192.168.1.1
 
 # Verify the copy. Both checksums must match before flashing.
 sha256sum "$BIN"
-ssh root@<span data-profile-ip>192.168.8.1</span> 'sha256sum /tmp/sysupgrade.bin'
+ssh root@192.168.8.1 'sha256sum /tmp/sysupgrade.bin'  # stock GL.iNet; pure-OpenWrt is 192.168.1.1
 
 # Flash. The SSH session will drop when sysupgrade kills sshd.
 # That is expected behavior; it confirms flashing started.
-ssh root@<span data-profile-ip>192.168.8.1</span> 'sysupgrade -n /tmp/sysupgrade.bin'
+ssh root@192.168.8.1 'sysupgrade -n /tmp/sysupgrade.bin'  # stock GL.iNet; pure-OpenWrt is 192.168.1.1
 # Wait 90 seconds for flash + reboot to complete.
 ```
 
@@ -878,10 +878,10 @@ Do not proceed with flashing if the checksums differ. The transfer was
 corrupted. Remove the partial file and re-copy:
 
 ```sh
-ssh root@<span data-profile-ip>192.168.8.1</span> 'rm /tmp/sysupgrade.bin'
-scp "$BIN" root@<span data-profile-ip>192.168.8.1</span>:/tmp/sysupgrade.bin
+ssh root@192.168.8.1 'rm /tmp/sysupgrade.bin'       # stock GL.iNet; pure-OpenWrt is 192.168.1.1
+scp "$BIN" root@192.168.8.1:/tmp/sysupgrade.bin      # stock GL.iNet; pure-OpenWrt is 192.168.1.1
 sha256sum "$BIN"
-ssh root@<span data-profile-ip>192.168.8.1</span> 'sha256sum /tmp/sysupgrade.bin'
+ssh root@192.168.8.1 'sha256sum /tmp/sysupgrade.bin' # stock GL.iNet; pure-OpenWrt is 192.168.1.1
 ```
 
 If the mismatch persists, check available RAM on the Mango (`free -m`); `/tmp`
