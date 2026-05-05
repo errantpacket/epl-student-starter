@@ -1,0 +1,6 @@
+# ImageBuilder build artifacts produced by `make drop-mango` and the
+# build-manifest hooks. These are reproducible from source; never commit.
+output/
+
+# Local docker compose state
+.docker/
