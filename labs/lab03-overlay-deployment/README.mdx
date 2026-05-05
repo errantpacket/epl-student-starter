@@ -119,7 +119,10 @@ command -v scp
 - Mango powered on, Ethernet to laptop **LAN (black)** port.
 - USB drive (16 GB or larger), not yet plugged into the Mango.
 - The Lab 02 sysupgrade `.bin` produced at
-  `labs/output/openwrt-23.05.3-ramips-mt76x8-glinet_gl-mt300n-v2-squashfs-sysupgrade.bin`.
+  `labs/output/openwrt-23.05.3-drop-v1-ramips-mt76x8-glinet_gl-mt300n-v2-squashfs-sysupgrade.bin`.
+  The `drop-v1` substring comes from `IMAGE_NAME=drop-v1` in
+  `build-drop-mango.sh`; Lab 12 reuses the convention with
+  `drop-v1-sealed`.
 
 **Mango is reachable:**
 
@@ -152,7 +155,7 @@ to `labs/output/`. Confirm it is present before copying to the Mango.
 # From the course root (or from inside the operator console):
 ls courses/engagement-platform-labs/labs/output/
 # Look for:
-#   openwrt-23.05.3-ramips-mt76x8-glinet_gl-mt300n-v2-squashfs-sysupgrade.bin
+#   openwrt-23.05.3-drop-v1-ramips-mt76x8-glinet_gl-mt300n-v2-squashfs-sysupgrade.bin
 ```
 
 If the file is absent, rebuild it:
@@ -450,8 +453,9 @@ filesystem created in Step 4.
 
 <LabStep lab="lab03" id="packages" num={7} title="Install packages onto ExtRoot">
 
-With `/overlay` on the USB drive, the available package space is limited only
-by the drive size. Install the three packages that could not fit in NOR:
+With `/overlay` on the USB drive, the available package space is limited
+only by the drive size. Install the two packages that could not fit in
+NOR:
 
 ```sh
 ssh root@192.168.1.1 'opkg update && opkg install tailscale python3-light'
@@ -461,51 +465,27 @@ ssh root@192.168.1.1 'opkg update && opkg install tailscale python3-light'
 `mipsel_24kc`. The feed URL is already correct in the NOR image built by
 Lab 02.
 
-**cloudflared** is not in the OpenWrt package feed for MIPS targets. Install
-the official Cloudflare binary directly:
+> **Why isn't cloudflared installed on the Mango?** Earlier versions of
+> this lab included a `cloudflared` install step. Cloudflare does not
+> publish a `mipsel` release binary (only `linux-386 / amd64 / arm /
+> arm64 / armhf`), and after the May 2026 architecture pivot the
+> Cloudflare Tunnel terminates at the **operator console** (Debian, with
+> cloudflared from the Cloudflare apt repo) rather than on the Mango.
+> The Mango reaches the operator console over Tailscale; the public
+> tunnel does not need a Mango-side `cloudflared` daemon. See Lab 06
+> for the tunnel architecture.
 
-```sh
-ssh root@192.168.1.1 '
-    curl -fsSL -o /usr/sbin/cloudflared \
-        "https://github.com/cloudflare/cloudflared/releases/download/2024.10.0/cloudflared-linux-mipsle"
-    chmod +x /usr/sbin/cloudflared
-'
-```
-
-> **Pin the cloudflared version.** The command above pins `2024.10.0`, which
-> matches the version baked into the operator console image. Pinning both
-> to the same release makes version comparisons straightforward and avoids
-> protocol drift. Delivery-notes item 2.4 tracks the instructor verification
-> of this binary on real Mango hardware; confirm `cloudflared --version` runs
-> before the workshop.
-
-If the direct download fails (network policy, certificate issue), download
-via the operator console and copy across:
-
-```sh
-# Inside the operator console:
-curl -fsSL -o /tmp/cloudflared-mipsle \
-    "https://github.com/cloudflare/cloudflared/releases/download/2024.10.0/cloudflared-linux-mipsle"
-
-# From your laptop (after copying out of the operator console if needed):
-scp /tmp/cloudflared-mipsle root@192.168.1.1:/usr/sbin/cloudflared
-ssh root@192.168.1.1 'chmod +x /usr/sbin/cloudflared'
-```
-
-Verify all three installations:
+Verify the installs:
 
 ```sh
 ssh root@192.168.1.1 'tailscale --version'
 # tailscale version X.Y.Z go...
 
-ssh root@192.168.1.1 'cloudflared --version'
-# cloudflared version 2024.10.0 ...
-
 ssh root@192.168.1.1 'python3 --version'
 # Python 3.x.y
 ```
 
-All three must return non-empty output before proceeding to the Validation
+Both must return non-empty output before proceeding to the Validation
 section.
 
 </LabStep>
@@ -572,8 +552,8 @@ When this lab is complete you should be able to answer yes to all of the followi
 - [ ] `mount | grep overlay` shows `type ext4`.
 - [ ] `/overlay` has at least 1 GB free.
 - [ ] `tailscale --version` on the Mango returns a non-empty version string.
-- [ ] `cloudflared --version` on the Mango returns a non-empty version string.
 - [ ] `python3 --version` on the Mango returns a non-empty version string.
+      (cloudflared is not installed on the Mango; see Step 7 note.)
 
 ---
 
@@ -621,8 +601,7 @@ can post to the backend directly.
 2. `/overlay` is listed in `mount` output with type `ext4` (ExtRoot is active).
 3. `/overlay` has at least 1 GB free (confirms USB drive, not NOR ramdisk).
 4. `tailscale --version` returns a non-empty string.
-5. `cloudflared --version` returns a non-empty string.
-6. `python3 --version` returns a non-empty string.
+5. `python3 --version` returns a non-empty string.
 
 **Default `MANGO_HOST`.** The script defaults to `192.168.8.1` (stock GL.iNet
 address). After the Lab 03 sysupgrade the Mango is at `192.168.1.1`. Always
@@ -737,8 +716,11 @@ ls /usr/share/$(ls /var/tmp/overlay-upper | head -1) 2>/dev/null || echo "not in
 - [Lab 05: Tailscale mesh](../lab05-tailscale-mesh/). Runs `tailscale up`
   on the Mango using the binary installed here. After Lab 05, the Mango is
   on the tailnet and the operator console can reach it by hostname.
-- [Lab 06: Cloudflare Tunnel](../lab06-cloudflare-tunnel/). Uses the
-  `cloudflared` binary installed here to establish the outbound tunnel.
+- [Lab 06: Cloudflare Tunnel](../lab06-cloudflare-tunnel/). The tunnel
+  origin is the **operator console** (Debian, with cloudflared from the
+  Cloudflare apt repo) rather than the Mango. The Mango is reached from
+  the operator console over the Tailscale tailnet established in Lab 05;
+  no `mipsel` cloudflared binary is needed.
 
 ---
 
@@ -819,44 +801,6 @@ As a fallback, download the `.ipk` from the feed mirror and install manually:
 # https://pkgs.openwrt.org/23.05.3/mipsel_24kc/base/
 # Find the tailscale ipk, download it, scp to Mango, then:
 ssh root@192.168.1.1 'opkg install /tmp/tailscale*.ipk'
-```
-
-</details>
-
-<details>
-<summary>cloudflared --version returns error (binary not executable or wrong architecture)</summary>
-
-The Mango (ramips/mt76x8) is `mipsel_24kc` (MIPS little-endian, soft-float).
-The correct Cloudflare release binary is `cloudflared-linux-mipsle`.
-
-Verify the binary is executable and check the error:
-
-```sh
-ssh root@192.168.1.1 'file /usr/sbin/cloudflared 2>/dev/null || echo "file not found"'
-ssh root@192.168.1.1 '/usr/sbin/cloudflared --version 2>&1 | head -3'
-```
-
-If the binary reports "Exec format error", it is the wrong architecture. Re-download
-`cloudflared-linux-mipsle` (not `mips64` or `arm64`).
-
-If the download step failed silently, the file may be an HTTP error page rather
-than the binary:
-
-```sh
-ssh root@192.168.1.1 'head -c 4 /usr/sbin/cloudflared | od -c'
-# A valid ELF binary starts with \177 E L F
-# An HTML error page starts with < h t m l
-```
-
-If it is HTML, re-run the curl command in Step 7 and check for HTTP errors:
-
-```sh
-ssh root@192.168.1.1 '
-    curl -fSL -o /usr/sbin/cloudflared \
-        "https://github.com/cloudflare/cloudflared/releases/download/2024.10.0/cloudflared-linux-mipsle"
-    # -f fails on HTTP errors; -S shows the error
-    chmod +x /usr/sbin/cloudflared
-'
 ```
 
 </details>

@@ -5,8 +5,12 @@
 #   1. /overlay is mounted from a block device (USB), not the NOR overlayfs.
 #   2. /overlay has at least 1 GB free (confirms USB, not a ramdisk stub).
 #   3. tailscale --version returns a non-empty string.
-#   4. cloudflared --version returns a non-empty string.
-#   5. python3 --version returns a non-empty string.
+#   4. python3 --version returns a non-empty string.
+#
+# Note: cloudflared is intentionally NOT checked. Cloudflare does not ship
+# a mipsel binary, and after the May 2026 architecture pivot the tunnel
+# runs on the operator console (Debian), not on the Mango. See Lab 03
+# Step 7 note and Lab 06.
 #
 # Usage:
 #   ./validate.sh                     # connects to 192.168.8.1 (default)
@@ -79,14 +83,7 @@ if [ -z "$TS_VERSION" ]; then
 fi
 pass "tailscale version: ${TS_VERSION}"
 
-# ---- 5. cloudflared --version is non-empty ----
-CF_VERSION=$(run_on_mango 'cloudflared --version 2>/dev/null | head -1' || true)
-if [ -z "$CF_VERSION" ]; then
-    fail "cloudflared --version returned empty output — cloudflared is not installed. See Lab 03 Troubleshooting."
-fi
-pass "cloudflared version: ${CF_VERSION}"
-
-# ---- 6. python3 --version is non-empty ----
+# ---- 5. python3 --version is non-empty ----
 PY_VERSION=$(run_on_mango 'python3 --version 2>/dev/null' || true)
 if [ -z "$PY_VERSION" ]; then
     fail "python3 --version returned empty output — python3-light is not installed. Run: opkg install python3-light"
