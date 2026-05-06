@@ -147,7 +147,7 @@ Use the LuCI web interface or `sysupgrade` from the Mango shell:
 **Option A — LuCI (recommended for first flash):**
 
 1. Connect your laptop to the Mango's LAN port.
-2. Navigate to `http://192.168.8.1`.
+2. Navigate to `http://192.168.1.1`.
 3. System > Backup/Flash Firmware > Flash new firmware image.
 4. Upload `drop-mango-sealed-${STUDENT}.bin`.
 5. Uncheck "Keep settings" — the sealed image must start clean.
@@ -158,10 +158,10 @@ Use the LuCI web interface or `sysupgrade` from the Mango shell:
 ```sh
 # Copy the image to the Mango first (ensure it's still running original firmware)
 scp courses/engagement-platform-labs/labs/output/drop-mango-sealed-${STUDENT}.bin \
-    root@192.168.8.1:/tmp/sealed.bin
+    root@192.168.1.1:/tmp/sealed.bin
 
 # Flash (this disconnects your SSH session immediately)
-ssh root@192.168.8.1 'sysupgrade -n /tmp/sealed.bin'
+ssh root@192.168.1.1 'sysupgrade -n /tmp/sealed.bin'
 ```
 
 The `-n` flag discards any existing overlay configuration, which is correct here — you want
@@ -284,18 +284,18 @@ image is stale, re-pull: `docker compose pull imagebuilder`.
 <details>
 <summary>Mango flashed but enrollment.log is empty or missing</summary>
 
-SSH to the Mango directly on the LAN (192.168.8.1) within the first 2 minutes of boot,
+SSH to the Mango directly on the LAN (192.168.1.1) within the first 2 minutes of boot,
 before the script finishes. Check if 99-enroll.sh is still present:
 
 ```sh
-ssh root@192.168.8.1 'ls -la /etc/uci-defaults/'
+ssh root@192.168.1.1 'ls -la /etc/uci-defaults/'
 ```
 
 If it is present but not yet run, uci-defaults runs during `procd` initialization. Check
 `logread` for errors:
 
 ```sh
-ssh root@192.168.8.1 'logread | grep -i enroll'
+ssh root@192.168.1.1 'logread | grep -i enroll'
 ```
 
 Common causes: USB ExtRoot not mounted (tailscale binary not present), no upstream network
@@ -311,7 +311,7 @@ Lab 03. If the USB is not plugged in or the ExtRoot overlay is not mounted, tail
 available. Verify:
 
 ```sh
-ssh root@192.168.8.1 'df -h | grep /overlay'
+ssh root@192.168.1.1 'df -h | grep /overlay'
 # Should show the USB device mounted at /overlay
 ```
 

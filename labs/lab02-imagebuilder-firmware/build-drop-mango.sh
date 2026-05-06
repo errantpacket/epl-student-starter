@@ -41,17 +41,29 @@ PACKAGES="
   block-mount kmod-usb-storage kmod-usb3 kmod-fs-ext4 e2fsprogs
   fdisk
   curl jsonfilter
+  iptables-nft
   tcpdump-mini
   -ppp -ppp-mod-pppoe
   -wpad-basic-wolfssl -wpad-basic-mbedtls -wpad-basic-openssl
   -odhcpd-ipv6only
-  -dnsmasq -firewall4 -nftables -kmod-nft-offload
+  -dnsmasq -firewall4 -kmod-nft-offload
   -luci -luci-base -luci-mod-admin-full -luci-theme-bootstrap
 "
 # Note: `fdisk` (~50 KB) is included so Lab 03 Step 3's partition path
 # works on a freshly-flashed Mango with a blank USB drive. Without it,
 # `fdisk: not found` blocks the lab. Default util-linux fdisk; no busybox
 # applet provides it.
+#
+# Note: `iptables-nft` (~1.5 MB closure: kmod-nft-compat + kmod-ipt-core +
+# libxtables12 + libiptext* + libnftnl11 + xtables-nft) is included so
+# Tailscale 1.58.2 doesn't segfault on first run. Without iptables on
+# PATH, tailscaled crashes with a nil iptablesRunner.HasIPV6 deref in
+# the linuxfw module. Confirmed during the 2026-05-06 bench walk
+# (delivery-notes §11.14): post-opkg-install of iptables-nft the daemon
+# comes up cleanly and `tailscale up` succeeds. The earlier `-nftables`
+# exclusion is removed because iptables-nft uses the nftables backend;
+# `-firewall4` and `-kmod-nft-offload` exclusions remain (we don't need
+# OpenWrt's firewall manager nor offload-engine kmods).
 
 echo ">>> drop-mango build"
 echo "    PROFILE=$PROFILE"

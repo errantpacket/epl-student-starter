@@ -128,7 +128,7 @@ printf '\n[3] Checking D1 audit_log for relay_decision entries...\n'
 
 AUDIT_RESULT=$(wrangler d1 execute fleet-database \
     --remote \
-    --command "SELECT action, details FROM audit_log WHERE action='relay_decision' ORDER BY created_at DESC LIMIT 2" \
+    --command "SELECT action, details FROM audit_log WHERE action='relay_decision' ORDER BY created_at DESC LIMIT 6" \
     --json 2>/dev/null) || \
     die "wrangler d1 execute failed. Check that:
   1. fleet-database D1 is provisioned (Lab 09)
@@ -144,17 +144,34 @@ if [ "$ROW_COUNT" -lt 2 ]; then
 fi
 pass "audit_log has ${ROW_COUNT} relay_decision rows (minimum 2 required)"
 
-# Verify both proxy and decoy decisions appear
-if ! printf '%s' "$AUDIT_RESULT" | grep -q '"proxy"'; then
-    printf 'WARN: no "proxy" result found in recent relay_decision rows\n' >&2
-else
+# Verify both proxy and decoy decisions appear. wrangler d1 execute returns
+# the audit_log.details column as a JSON-escaped string within an outer JSON
+# response, so the embedded `"result":"proxy"` arrives as
+# `\"result\":\"proxy\"`. Match the escaped form. With jq we can do the
+# unwrap properly.
+have_result() {
+    target=$1
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$AUDIT_RESULT" \
+            | jq -r '.[]?.results[]?.details // empty' 2>/dev/null \
+            | jq -r '.result // empty' 2>/dev/null \
+            | grep -qx "$target"
+    else
+        # Match the JSON-escaped substring directly.
+        printf '%s' "$AUDIT_RESULT" | grep -q "\\\\\"result\\\\\":\\\\\"$target\\\\\""
+    fi
+}
+
+if have_result proxy; then
     pass "proxy decision is present in audit_log"
+else
+    printf 'WARN: no proxy result found in recent relay_decision rows\n' >&2
 fi
 
-if ! printf '%s' "$AUDIT_RESULT" | grep -q '"decoy"'; then
-    printf 'WARN: no "decoy" result found in recent relay_decision rows\n' >&2
-else
+if have_result decoy; then
     pass "decoy decision is present in audit_log"
+else
+    printf 'WARN: no decoy result found in recent relay_decision rows\n' >&2
 fi
 
 # ---------------------------------------------------------------------------

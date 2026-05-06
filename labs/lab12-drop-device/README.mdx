@@ -94,7 +94,8 @@ instructor. It must be the same slot token used in Lab 05
 
 > **Codespace users.** The bench-side steps (flash via LuCI / sysupgrade,
 > plug-in, observe) require a laptop on the Mango's local network. A
-> Codespace cannot reach 192.168.8.x of a physical Mango. Plan to run
+> Codespace cannot reach 192.168.1.x of a physical Mango (or
+> 192.168.8.x if the Mango is still on stock GL.iNet firmware). Plan to run
 > steps 1–4 (bake) in the Codespace, then move to a laptop terminal for
 > step 5 (flash) and step 6 (initial enrollment observation). Step 7 and
 > validate.sh can run from either: they hit the public Worker over the
@@ -247,7 +248,7 @@ Use the LuCI web interface or `sysupgrade` from the Mango shell.
 **Option A. LuCI (recommended for first flash):**
 
 1. Connect your laptop to the Mango's LAN port.
-2. Navigate to `http://192.168.8.1`.
+2. Navigate to `http://192.168.1.1`.
 3. System > Backup/Flash Firmware > Flash new firmware image.
 4. Upload `drop-mango-sealed-${STUDENT}.bin`.
 5. Uncheck "Keep settings". The sealed image must start clean.
@@ -259,10 +260,10 @@ Use the LuCI web interface or `sysupgrade` from the Mango shell.
 ```sh
 # Copy the image to the Mango first (ensure it is still running original firmware)
 scp -O courses/engagement-platform-labs/labs/output/drop-mango-sealed-${STUDENT}.bin \
-    root@192.168.8.1:/tmp/sealed.bin
+    root@192.168.1.1:/tmp/sealed.bin
 
 # Flash (this disconnects your SSH session immediately)
-ssh root@192.168.8.1 'sysupgrade -n /tmp/sealed.bin'
+ssh root@192.168.1.1 'sysupgrade -n /tmp/sealed.bin'
 ```
 
 The `-n` flag discards any existing overlay configuration, which is
@@ -270,7 +271,7 @@ correct here. You want the sealed secrets and no prior overlay
 contamination.
 
 > **Note for Codespace users.** Both Option A and Option B require
-> network reachability of `192.168.8.1`, which a Codespace cannot
+> network reachability of `192.168.1.1`, which a Codespace cannot
 > provide. Run this step from a laptop terminal physically attached to
 > the Mango's LAN port.
 
@@ -546,19 +547,19 @@ ImageBuilder container. If the container image is stale, re-pull:
 <details>
 <summary>Mango flashed but enrollment.log is empty or missing</summary>
 
-SSH to the Mango directly on the LAN (192.168.8.1) within the first 2
+SSH to the Mango directly on the LAN (192.168.1.1) within the first 2
 minutes of boot, before the script finishes. Check if 99-enroll.sh is
 still present:
 
 ```sh
-ssh root@192.168.8.1 'ls -la /etc/uci-defaults/'
+ssh root@192.168.1.1 'ls -la /etc/uci-defaults/'
 ```
 
 If it is present but not yet run, uci-defaults runs during `procd`
 initialization. Check `logread` for errors:
 
 ```sh
-ssh root@192.168.8.1 'logread | grep -i enroll'
+ssh root@192.168.1.1 'logread | grep -i enroll'
 ```
 
 Common causes: USB ExtRoot not mounted (tailscale binary not present),
@@ -574,7 +575,7 @@ on the ExtRoot USB in Lab 03. If the USB is not plugged in or the
 ExtRoot overlay is not mounted, tailscale is not available. Verify:
 
 ```sh
-ssh root@192.168.8.1 'df -h | grep /overlay'
+ssh root@192.168.1.1 'df -h | grep /overlay'
 # Should show the USB device mounted at /overlay
 ```
 
