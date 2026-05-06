@@ -108,6 +108,15 @@ verification, as part of the Debian devcontainer Dockerfile. The version in the
 container is the latest stable at image-build time. You do not need to install or pin
 cloudflared manually.
 
+> **TLS coverage on the shared parent zone.** This workshop runs
+> against `eplabs.cloud` with Advanced Certificate Manager / Total TLS
+> enabled, so `https://api.<slot>.eplabs.cloud/` automatically gets a
+> per-hostname certificate. If you see a TLS handshake error, the
+> ACM cert pack hasn't finished provisioning yet (5–30 min after the
+> DNS record is created); retry shortly. The take-home BYO-domain
+> variant in `handouts/workshop_domain_prerequisites.md` covers
+> students who manage their own zone instead.
+
 <EnvBlock env="codespace">
 
 > **Codespace users:** the operator console is the Codespace terminal. All cloudflared

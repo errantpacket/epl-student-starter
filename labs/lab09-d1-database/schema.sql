@@ -1,8 +1,10 @@
 -- fleet-database schema
 -- Applied via: wrangler d1 execute fleet-database --file=schema.sql --remote
 -- Source: docs/technical_specifications.md Worker template + added indices / constraints.
-
-PRAGMA journal_mode = WAL;
+--
+-- Note: D1 rejects PRAGMA statements with SQLITE_AUTH; the engine runs in WAL
+-- mode by default, so the explicit PRAGMA below was removed during the
+-- 2026-05-05 walk (delivery-notes §11.9).
 
 -- ---------------------------------------------------------------------------
 -- devices

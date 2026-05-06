@@ -161,7 +161,7 @@ export OUTPUT_DIR="$OUTPUT_DIR"
 export IMAGE_NAME="drop-v1-sealed"
 
 docker compose \
-    -f "${LABS_DIR}/../docker-compose.yml" \
+    -f "${LABS_DIR}/docker-compose.yml" \
     run --rm imagebuilder \
     "/labs/lab02-imagebuilder-firmware/build-drop-mango.sh"
 

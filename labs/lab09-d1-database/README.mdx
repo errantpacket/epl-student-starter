@@ -1,43 +1,75 @@
 ---
-title: "D1 Device Registry and Audit Log"
+title: "D1 device registry and audit log"
 labNumber: 9
 duration: "60 minutes"
 day: "Day 2, Session 2"
 hardwareRequired: false
-widgets: ["MarkCompleteButton", "ValidateOutputPaster", "ViewSource"]
+codespaces: "supported"
+widgets: ["EnvironmentToggle", "LabProgress", "LabStep", "EnvBlock", "ValidateOutputPaster", "MarkCompleteButton", "ViewSource"]
 ---
 
-import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
+import EnvironmentToggle from '@widgets/EnvironmentToggle.svelte';
+import LabProgress from '@widgets/LabProgress.svelte';
+import LabStep from '@widgets/LabStep.astro';
+import EnvBlock from '@widgets/EnvBlock.astro';
 import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
+import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
 import ViewSource from '@widgets/ViewSource.svelte';
 
-> **Self-referential hook:** Your progress on every lab is stored in the same kind of D1 schema you are about to write. The `students` and `progress` tables that track your completion state on this site are a direct extension of the fleet schema from this lab — same binding convention, same prepared statement pattern, same upsert logic. When you query `sqlite_master` in step 3, you will recognize the structure immediately.
+<EnvironmentToggle client:load />
 
-# Lab 09 — D1 Device Registry and Audit Log
+<LabProgress lab="lab09" client:load steps={[
+  { id: 'create',         label: '1. Create the D1 database' },
+  { id: 'wrangler',       label: '2. Update wrangler.toml with your database_id' },
+  { id: 'schema',         label: '3. Apply the schema' },
+  { id: 'review-schema',  label: '4. Review the schema' },
+  { id: 'review-worker',  label: '5. Review the Worker code' },
+  { id: 'redeploy',       label: '6. Redeploy the Worker' },
+  { id: 'enroll',         label: '7. Test enrollment' },
+  { id: 'list',           label: '8. Test the device list' },
+  { id: 'audit',          label: '9. Inspect the audit log directly' },
+  { id: 'reenroll',       label: '10. Re-enroll the same device' },
+  { id: 'validate',       label: 'Run validation' },
+]} />
+
+# Lab 09 — D1 device registry and audit log
 
 **Duration: 60 minutes**
-**Day:** 2, Session 2
 
-The Worker from Lab 07 has been returning HTTP 501 for `/v1/devices/enroll` and
-`/v1/devices` since you deployed it. That ends here. In this lab you provision a
-Cloudflare D1 SQLite database, apply the fleet schema, wire the Worker bindings, and
-replace both stubs with real INSERT and SELECT logic. By the end, enrolling a device
-writes a row to the `devices` table and a corresponding row to `audit_log`; the device
-list endpoint reads them back as authenticated JSON.
+> **Self-referential hook.** Your progress on every lab is stored in the
+> same kind of D1 schema you are about to write. The `students` and
+> `progress` tables that track your completion state on this site are a
+> direct extension of the fleet schema from this lab: same binding
+> convention, same prepared statement pattern, same upsert logic. When you
+> query `sqlite_master` in step 3, you will recognize the structure
+> immediately.
 
-D1 is the tamper-evident spine of the engagement platform — every action that matters
-goes through it.
+The Worker from Lab 07 has been returning HTTP 401 (auth gate) or 501
+(stub) for `/v1/devices/enroll` and `/v1/devices` since you deployed it.
+That ends here. In this lab you provision a Cloudflare D1 SQLite database,
+apply the fleet schema, wire the Worker bindings, and replace both stubs
+with real INSERT and SELECT logic. By the end, enrolling a device writes a
+row to the `devices` table and a corresponding row to `audit_log`; the
+device list endpoint reads them back as authenticated JSON.
+
+D1 is the durable spine of the engagement platform. Every action that
+matters writes a row here, and every operator tool reads from the same
+tables.
 
 ---
 
 ## Learning objectives
 
-- Provision a D1 database with `wrangler d1 create` and understand the `database_id`.
+- Provision a D1 database with `wrangler d1 create` and understand the
+  `database_id`.
 - Apply a SQL schema file with `wrangler d1 execute --file --remote`.
 - Wire a D1 binding in `wrangler.toml` (`[[d1_databases]]`) and redeploy.
-- Read and write D1 from a Worker using prepared statements with positional parameters.
-- Understand `INSERT ... ON CONFLICT DO UPDATE` (upsert) for idempotent re-enrollment.
-- Query the audit log directly via `wrangler d1 execute` as an operator tool.
+- Read and write D1 from a Worker using prepared statements with
+  positional parameters.
+- Understand `INSERT ... ON CONFLICT DO UPDATE` (upsert) for idempotent
+  re-enrollment.
+- Query the audit log directly via `wrangler d1 execute` as an operator
+  tool.
 
 ---
 
@@ -47,29 +79,60 @@ Before starting, confirm:
 
 ```sh
 # Lab 07 Worker is deployed and /v1/health returns 200
-curl -sf https://api.&#36;\{DOMAIN\}/v1/health | jq .ok
+curl -sf https://api.${DOMAIN}/v1/health | jq .ok
 # Expected: true
 
 # wrangler is authenticated
 wrangler whoami
 
 # DOMAIN is exported
-echo "&#36;\{DOMAIN\}"
+echo "${DOMAIN}"
 ```
 
-Confirm that enroll still returns 501 (it should — Lab 07 stubs are in place):
+Confirm that enrollment still rejects without a service token (Lab 08
+gates the route):
 
 ```sh
 curl -s -o /dev/null -w "%{http_code}" \
-    -X POST https://api.&#36;\{DOMAIN\}/v1/devices/enroll
-# Expected: 501
+    -X POST https://api.${DOMAIN}/v1/devices/enroll
+# Expected: 401 (CF Access blocks the unauthenticated POST)
 ```
+
+<EnvBlock env="codespace">
+
+> **Codespace users.** wrangler is pre-installed in the operator console
+> and your `~/.config/` directory is persisted as a named volume. Run
+> `wrangler whoami` to confirm your session is active. If it is not, run
+> `wrangler login` again.
+
+</EnvBlock>
+
+<EnvBlock env="local-dev,minimal-local">
+
+> **Local Dev / Minimal local.** `cloudflared access` (used in step 8 to
+> mint an operator JWT) is bundled in the operator console image. If it
+> is missing on your host, install via the Cloudflare apt repo
+> (`pkg.cloudflare.com/cloudflared`) before step 8.
+
+</EnvBlock>
+
+---
+
+## Where each step runs
+
+All steps run in the operator console plus the Cloudflare D1 backend over
+the wrangler remote API. No bench hardware is involved.
+
+| Step | Operator console |
+|------|:----------------:|
+| 1–10. All steps | yes |
+| Validation     | yes |
 
 ---
 
 ## Walkthrough
 
-### 1. Create the D1 database
+<LabStep lab="lab09" id="create" num={1} title="Create the D1 database">
 
 ```sh
 cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
@@ -88,12 +151,15 @@ database_name = "fleet-database"
 database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 ```
 
-Copy the `database_id` value — you need it in the next step.
+Copy the `database_id` value. You need it in the next step.
 
-### 2. Update wrangler.toml with your database_id
+</LabStep>
 
-Open `worker/wrangler.toml`. The `[[d1_databases]]` block is already present and
-uncommented. Replace `YOUR_D1_DATABASE_ID` with the UUID from step 1:
+<LabStep lab="lab09" id="wrangler" num={2} title="Update wrangler.toml with your database_id">
+
+Open `worker/wrangler.toml`. The `[[d1_databases]]` block is already
+present and uncommented. Replace `YOUR_D1_DATABASE_ID` with the UUID from
+step 1:
 
 ```toml
 [[d1_databases]]
@@ -106,7 +172,7 @@ Or use sed:
 
 ```sh
 DB_ID="paste-your-database_id-here"
-sed -i "s/YOUR_D1_DATABASE_ID/&#36;\{DB_ID\}/" wrangler.toml
+sed -i "s/YOUR_D1_DATABASE_ID/${DB_ID}/" wrangler.toml
 ```
 
 Verify:
@@ -116,10 +182,13 @@ grep "database_id" wrangler.toml
 # Should show your UUID, not the placeholder
 ```
 
-### 3. Apply the schema
+</LabStep>
 
-The schema file is at `labs/lab09-d1-database/schema.sql`. It creates three tables:
-`devices`, `audit_log`, and `sessions`, plus indices on hot query columns.
+<LabStep lab="lab09" id="schema" num={3} title="Apply the schema">
+
+The schema file is at `labs/lab09-d1-database/schema.sql`. It creates
+three tables (`devices`, `audit_log`, `sessions`) plus indices on hot
+query columns.
 
 <ViewSource client:visible path="labs/lab09-d1-database/schema.sql" />
 
@@ -160,68 +229,95 @@ Expected output:
 └───────────┘
 ```
 
-### 4. Review the schema
+</LabStep>
 
-Open `labs/lab09-d1-database/schema.sql` and read through it. Key design decisions:
+<LabStep lab="lab09" id="review-schema" num={4} title="Review the schema">
 
-- `devices.device_id` is the primary key — a stable hardware identifier (e.g. the
-  value from `/proc/cpuinfo Serial` on MIPS, or a UUID set at image build time).
-- `INSERT ... ON CONFLICT DO UPDATE` in the Worker means re-enrolling a device
-  (after a reboot or re-flash) is safe — it updates `last_seen` and `tailscale_hostname`
-  without creating a duplicate row.
-- `audit_log` is append-only — the Worker never DELETEs or UPDATEs rows here.
-  `device_id` is nullable because some audit events (operator login, schema migration)
-  are not scoped to a specific device.
-- `sessions` is for Lab 12 operator sessions. It is created now so the schema migration
-  is a single operation.
-- Indices on `devices(last_seen)` and `audit_log(device_id, created_at)` keep the
-  device list query and audit queries fast even with thousands of rows.
+Open `labs/lab09-d1-database/schema.sql` and read through it. Key design
+decisions:
 
-### 5. Review the Worker code
+- `devices.device_id` is the primary key. A stable hardware identifier
+  (e.g. the value from `/proc/cpuinfo Serial` on MIPS, or a UUID set at
+  image build time).
+- `INSERT ... ON CONFLICT DO UPDATE` in the Worker means re-enrolling a
+  device (after a reboot or re-flash) is safe: it updates `last_seen` and
+  `tailscale_hostname` without creating a duplicate row.
+- `audit_log` is append-only. The Worker never DELETEs or UPDATEs rows
+  here. `device_id` is nullable because some audit events (operator
+  login, schema migration) are not scoped to a specific device.
+- `sessions` is for Lab 12 operator sessions. It is created now so the
+  schema migration is a single operation.
+- Indices on `devices(last_seen)` and `audit_log(device_id, created_at)`
+  keep the device list query and audit queries fast even with thousands
+  of rows.
+
+</LabStep>
+
+<LabStep lab="lab09" id="review-worker" num={5} title="Review the Worker code">
 
 The `handleEnroll()` and `handleDeviceList()` functions in
-`labs/lab07-first-worker/worker/src/index.js` are now fully implemented. Read both
-functions before deploying. Key points:
+`labs/lab07-first-worker/worker/src/index.js` are now fully implemented.
+Read both functions before deploying. Key points:
 
 **handleEnroll:**
-- Validates `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers (device service
-  token from Lab 08). Requests without these return 401.
-- Requires `device_id`, `device_type`, and `tailscale_hostname` in the JSON body.
-- Generates a `tag` string (`device-&lt;type&gt;-&lt;ts&gt;`) used for Tailscale ACL scoping.
-- Upserts the device row: first enrollment INSERTs; subsequent re-enrollments UPDATE
-  `last_seen` and hostname.
+
+- Checks for `Cf-Access-Jwt-Assertion` (operator JWT) or
+  `Cf-Access-Authenticated-User-Email` (CF Access strips the raw
+  service-token headers and forwards these). Requests without an Access
+  context return 401.
+- Requires `device_id`, `device_type`, and `tailscale_hostname` in the
+  JSON body.
+- Generates a `tag` string (`device-<type>-<ts>`) used for Tailscale ACL
+  scoping.
+- Upserts the device row: first enrollment INSERTs; subsequent
+  re-enrollments UPDATE `last_seen` and hostname.
 - Always writes an `audit_log` row with action `"enroll"`.
 
 **handleDeviceList:**
-- Requires `CF-Access-Jwt-Assertion` header (operator JWT from CF Access). Requests
-  without this return 401.
+
+- Requires the same Access context. Requests without it return 401.
 - SELECTs all devices ordered by `last_seen DESC`.
-- Parses the `metadata` JSON blob and adds a computed `status` field (`"online"` if
-  `last_seen` is within the last 5 minutes).
+- Parses the `metadata` JSON blob and adds a computed `status` field
+  (`"online"` if `last_seen` is within the last 5 minutes).
 
-The `logAudit()` utility is shared — Labs 10 and 11 also call it. It silently swallows
-errors so an audit write failure never breaks the primary request path.
+The `logAudit()` utility is shared. Labs 10 and 11 also call it. It
+silently swallows errors so an audit write failure never breaks the
+primary request path.
 
-### 6. Redeploy the Worker
+</LabStep>
+
+<LabStep lab="lab09" id="redeploy" num={6} title="Redeploy the Worker">
 
 ```sh
 cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
 npx wrangler deploy
 ```
 
-The deploy output should still show the same route. The binding change takes effect
-immediately on deploy.
+The deploy output should still show the same route. The binding change
+takes effect immediately on deploy.
 
-### 7. Test enrollment
+> **Token note.** If you are deploying with an API token rather than via
+> `wrangler login` (OAuth), the deploy may fail with `[code: 10023] d1
+> bindings require d1 bind permission`. The simplest unblock is `wrangler
+> login` for an interactive OAuth grant; the OAuth-grant token has the
+> broadest perms and avoids the API-token catalog gap.
 
-Use a fake device payload. The service token headers can be any non-empty strings for
-testing — in production they must match the token you created in Lab 08.
+</LabStep>
+
+<LabStep lab="lab09" id="enroll" num={7} title="Test enrollment">
+
+Use a fake device payload. The CF Access service token from Lab 08 must be
+exported before the request reaches the Worker; Cloudflare strips the
+`CF-Access-Client-*` headers at the edge and forwards a JWT assertion.
 
 ```sh
+export CF_ACCESS_CLIENT_ID="<from output/access-tokens.json>"
+export CF_ACCESS_CLIENT_SECRET="<from output/access-tokens.json>"
+
 curl -s \
-    -X POST "https://api.&#36;\{DOMAIN\}/v1/devices/enroll" \
-    -H "CF-Access-Client-Id: test-client-id" \
-    -H "CF-Access-Client-Secret: test-client-secret" \
+    -X POST "https://api.${DOMAIN}/v1/devices/enroll" \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
     -H "Content-Type: application/json" \
     -d '{
         "device_id": "lab09-test-device",
@@ -242,16 +338,22 @@ Expected response:
 }
 ```
 
-### 8. Test the device list
+</LabStep>
+
+<LabStep lab="lab09" id="list" num={8} title="Test the device list">
 
 ```sh
 # Get a CF Access JWT for your operator account first.
-# In the devcontainer, wrangler can produce a test token:
-TOKEN=$(npx wrangler access token "https://api.&#36;\{DOMAIN\}")
+# `cloudflared access` is the canonical CLI for Access tokens; it is
+# pre-installed in the operator console (Lab 06).  The first invocation
+# opens the OAuth grant flow in a browser; subsequent invocations
+# return the cached token.
+cloudflared access login "https://api.${DOMAIN}"
+TOKEN=$(cloudflared access token --app "https://api.${DOMAIN}")
 
 curl -s \
-    -H "CF-Access-Jwt-Assertion: &#36;\{TOKEN\}" \
-    "https://api.&#36;\{DOMAIN\}/v1/devices" | jq .
+    -H "CF-Access-Jwt-Assertion: ${TOKEN}" \
+    "https://api.${DOMAIN}/v1/devices" | jq .
 ```
 
 Expected response (truncated):
@@ -271,7 +373,9 @@ Expected response (truncated):
 ]
 ```
 
-### 9. Inspect the audit log directly
+</LabStep>
+
+<LabStep lab="lab09" id="audit" num={9} title="Inspect the audit log directly">
 
 ```sh
 cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
@@ -280,13 +384,16 @@ npx wrangler d1 execute fleet-database \
     --remote
 ```
 
-You should see one row with `action = "enroll"` and `device_id = "lab09-test-device"`.
+You should see one row with `action = "enroll"` and
+`device_id = "lab09-test-device"`.
 
-### 10. Re-enroll the same device
+</LabStep>
 
-Run the enrollment curl from step 7 again without changing the `device_id`. The
-response should be identical (same `device_id`), but the device row is updated rather
-than duplicated. Verify:
+<LabStep lab="lab09" id="reenroll" num={10} title="Re-enroll the same device">
+
+Run the enrollment curl from step 7 again without changing the
+`device_id`. The response should be identical (same `device_id`), but the
+device row is updated rather than duplicated. Verify:
 
 ```sh
 npx wrangler d1 execute fleet-database \
@@ -300,8 +407,10 @@ npx wrangler d1 execute fleet-database \
 # count: 2  (one row per enrollment call)
 ```
 
-This is the correct behavior: the device table has one row per device; the audit log
-has one row per event.
+This is the correct behavior. The device table has one row per device;
+the audit log has one row per event.
+
+</LabStep>
 
 ---
 
@@ -311,25 +420,169 @@ When this lab is complete:
 
 - [ ] `fleet-database` D1 database exists in your Cloudflare account.
 - [ ] `wrangler.toml` `database_id` is set to your actual UUID.
-- [ ] `schema.sql` applied — `devices`, `audit_log`, `sessions` tables exist.
-- [ ] `/v1/devices/enroll` returns HTTP 200 with `enrolled: true`.
-- [ ] `/v1/devices` returns a JSON array (may be empty if you cleared test data).
+- [ ] `schema.sql` applied. `devices`, `audit_log`, `sessions` tables
+      exist.
+- [ ] `/v1/devices/enroll` returns HTTP 200 with `enrolled: true` when
+      called with the service token.
+- [ ] `/v1/devices` returns a JSON array (may be empty if you cleared
+      test data).
 - [ ] `audit_log` contains an `"enroll"` row for the test device.
+- [ ] `validate.sh` exits 0.
 
 ---
 
 ## Validation
 
+Three validation paths. Pick whichever matches your setup. All three call
+the same `validate.sh` and post the result to the same backend; only the
+delivery channel differs.
+
+**Path 1: `epl` CLI** (recommended from the operator console).
+
 ```sh
-chmod +x courses/engagement-platform-labs/labs/lab09-d1-database/validate.sh
 export DOMAIN="<your-domain>"
-courses/engagement-platform-labs/labs/lab09-d1-database/validate.sh
+export CF_ACCESS_CLIENT_ID="<your-client-id>"
+export CF_ACCESS_CLIENT_SECRET="<your-client-secret>"
+
+epl validate lab09-d1-database
 ```
 
-The script enrolls a synthetic device, fetches the device list, and queries D1
-directly for the audit log row. It exits 0 on success.
+**Path 2: direct script.**
+
+```sh
+export DOMAIN="<your-domain>"
+export CF_ACCESS_CLIENT_ID="<your-client-id>"
+export CF_ACCESS_CLIENT_SECRET="<your-client-secret>"
+
+bash courses/engagement-platform-labs/labs/lab09-d1-database/validate.sh
+```
+
+Or via the Makefile:
+
+```sh
+cd courses/engagement-platform-labs/labs
+make validate-lab09-d1-database
+```
+
+**Path 3: paste output into the widget.**
+
+Run `validate.sh` anywhere, copy the full terminal output, and paste it
+into the widget below.
+
+**What the script checks** (5 sections, 9 explicit assertions):
+
+1. **Device enrollment.** POST to `/v1/devices/enroll` returns HTTP 200,
+   `enrolled: true`, a `tag` matching `device-mango-<ts>`, and the
+   `device_id` from the request body.
+2. **Re-enrollment idempotency.** A second POST with the same
+   `device_id` succeeds and the `devices` row count stays at 1.
+3. **Device list.** GET `/v1/devices` returns a JSON array containing
+   the test device. (Soft-skips if no `cloudflared access` OAuth login;
+   the script prints how to obtain a token.)
+4. **Audit log.** D1 `audit_log` contains at least one
+   `action = "enroll"` row scoped to the test device.
+5. **Schema integrity.** `sqlite_master` returns the three expected
+   tables.
 
 <ValidateOutputPaster client:load lab="lab09" />
+
+View the schema this lab applies:
+
+<ViewSource path="labs/lab09-d1-database/schema.sql" client:visible />
+
+---
+
+## Primitives and drop-in substitutes
+
+D1 is two primitives stacked: an **edge-distributed relational store**
+(SQLite running at Cloudflare's edge with eventually-consistent replicas)
+and an **append-only audit log** (a `audit_log` table that the Worker
+writes to but never UPDATEs or DELETEs from). Either can be replaced
+without changing the other.
+
+The Worker code does not depend on D1's specifics. Every prepared
+statement call (`env.FLEET_DB.prepare("SELECT ...").bind(...).first()`)
+would translate to any of the substitutes below with different connection
+wiring.
+
+### Distributed relational store substitutes
+
+| Name | License | When to consider it |
+|---|---|---|
+| **Cloudflare D1** (this lab) | proprietary | edge-replicated SQLite; free tier; tightest fit when you are already on Workers |
+| **Turso / libSQL** | MIT (libSQL) | multi-region SQLite; can run embedded or hosted; good fit when the Worker shape is already SQLite-shaped |
+| **LiteFS** | Apache-2.0 | Fly.io's SQLite replication via FUSE; pairs well with Fly app servers |
+| **rqlite** | MIT | Raft-replicated SQLite; self-hosted; choose when you need an HA SQLite without a managed service |
+| **Neon** | Apache-2.0 (some components) | managed Postgres with branching; generous free tier; the closest substitute when SQLite features are insufficient |
+| **Supabase** | Apache-2.0 | self-hostable Postgres plus auth and realtime; opinionated platform |
+| **PlanetScale** | proprietary | managed MySQL/Vitess with branching; horizontal scale by default |
+| **AWS Aurora Serverless v2** | proprietary | Postgres or MySQL compatible; AWS-flavored; pay-per-second scaling |
+| **CockroachDB** | BSL-1.1 | distributed SQL with Postgres wire compat; strong consistency over geographic distance |
+| **YugabyteDB** | Apache-2.0 | distributed SQL; Postgres compat; open core |
+| **DuckDB** | MIT | embedded analytical SQL; not distributed; useful when reads dominate and the dataset fits a single node |
+
+### Append-only audit log substitutes
+
+| Pattern | Storage shape | When to consider it |
+|---|---|---|
+| **D1 `audit_log` table** (this lab) | SQL rows with monotonic `created_at` | simplest path; queryable via SQL; same store as the operational data |
+| **AWS CloudTrail** | managed proprietary | when AWS-aligned; integrates with EventBridge for downstream pipelines |
+| **Datadog Audit Trail / Splunk** | SaaS SIEM | when audit events also feed alerting and forensics dashboards |
+| **syslog plus journald** | local log files | cheap; lossy under pressure; good enough for single-host operator logs |
+| **Kafka topic with infinite retention** | partitioned event log | when audit volume justifies a real event spine; high ops overhead |
+| **DynamoDB streams plus S3 archive** | hot table plus cold archive | high-write audit at AWS scale |
+| **Append-only log files plus S3** (Vector / Fluent Bit) | shipped log files | pragmatic; durable; works on any host |
+| **Postgres temporal tables / pgaudit** | row-versioned tables | when relational integrity over the audit history matters |
+
+The Lab 09 design picks the simplest workable combination. The Worker
+talks to one D1 binding; both `devices` (mutable) and `audit_log`
+(append-only) live in the same database. Splitting the audit log onto a
+separate primitive is a follow-on architectural choice, not a Lab 09
+gate.
+
+---
+
+## Further reading
+
+**Cloudflare D1:**
+
+- [D1 overview](https://developers.cloudflare.com/d1/).
+  The platform reference: durability model, regional replicas, pricing.
+- [`wrangler d1` reference](https://developers.cloudflare.com/workers/wrangler/commands/#d1).
+  `create`, `execute`, `migrations`, `list`, `delete`. Both `--local` and
+  `--remote` flags are documented here.
+- [D1 client API in Workers](https://developers.cloudflare.com/d1/build-with-d1/d1-client-api/).
+  `prepare()`, `.bind()`, `.first()`, `.all()`, `.run()` and the
+  `db.batch()` group-commit form.
+
+**SQLite:**
+
+- [Upsert (`INSERT ... ON CONFLICT DO UPDATE`)](https://www.sqlite.org/lang_upsert.html).
+  The exact SQLite semantics the Worker depends on for idempotent
+  re-enrollment.
+- [Indexes and query planning](https://www.sqlite.org/queryplanner.html).
+  Why `audit_log(device_id, created_at)` was chosen for the device list
+  + audit queries.
+
+**Workshop-internal:**
+
+- [Lab 07: First Worker](../lab07-first-worker/). The Worker that gets
+  the new D1 binding here. The `handleEnroll()` and `handleDeviceList()`
+  stubs you saw in Lab 07 are now backed by D1 calls.
+- [Lab 08: Cloudflare Access](../lab08-cloudflare-access/). Mints the
+  service token used by step 7 and provides the operator JWT used by
+  step 8.
+- [Lab 10: KV and R2 storage](../lab10-kv-r2-storage/). Adds the next
+  two bindings on the same Worker; the `audit_log` table also captures
+  artifact upload events.
+- [Lab 14: Capstone](../lab14-capstone/). Reads the audit chain to
+  verify the end-to-end round-trip.
+
+---
+
+<MarkCompleteButton client:load lab="lab09" />
+
+> View this page's source: [`labs/lab09-d1-database/README.mdx`](https://github.com/errantpacket/OpenWRT_Course/blob/main/courses/engagement-platform-labs/labs/lab09-d1-database/README.mdx)
 
 ---
 
@@ -338,19 +591,32 @@ directly for the audit log row. It exits 0 on success.
 <details>
 <summary>Worker returns "FLEET_DB is not defined" or 500 on /v1/devices/enroll</summary>
 
-- The `database_id` placeholder was not replaced. Check `wrangler.toml` for
-  `YOUR_D1_DATABASE_ID` and substitute your real UUID.
-- The Worker may not have been redeployed after editing `wrangler.toml`. Run
-  `npx wrangler deploy` again.
-- Confirm the binding appears in the deployed Worker: Cloudflare dashboard >
-  Workers & Pages > fleet-gateway > Settings > Bindings.
+- The `database_id` placeholder was not replaced. Check `wrangler.toml`
+  for `YOUR_D1_DATABASE_ID` and substitute your real UUID.
+- The Worker may not have been redeployed after editing `wrangler.toml`.
+  Run `npx wrangler deploy` again.
+- Confirm the binding appears in the deployed Worker: Cloudflare
+  dashboard > Workers and Pages > fleet-gateway > Settings > Bindings.
+
+</details>
+
+<details>
+<summary>wrangler deploy fails with "[code: 10023] d1 bindings require d1 bind permission"</summary>
+
+API tokens issued via the Cloudflare dashboard catalog do not currently
+expose a literal "D1 Bind" permission group. The simplest unblock is to
+run `wrangler login` for an interactive OAuth grant; the OAuth-grant
+token has the broadest perms including `d1 bind`, `kv bind`, and `r2
+bind`. Alternatively, issue a token through the dashboard's "Edit
+Cloudflare Workers" template (multi-perm bundle).
 
 </details>
 
 <details>
 <summary>wrangler d1 execute fails: "database not found"</summary>
 
-- The database name must match exactly: `fleet-database` (hyphen, lowercase).
+- The database name must match exactly: `fleet-database` (hyphen,
+  lowercase).
 - Run `wrangler d1 list` to confirm the database exists in your account.
 - If it does not exist, re-run `wrangler d1 create fleet-database`.
 
@@ -359,31 +625,46 @@ directly for the audit log row. It exits 0 on success.
 <details>
 <summary>/v1/devices returns 401 "Unauthorized"</summary>
 
-- The `CF-Access-Jwt-Assertion` header is required. The simplest way to get a valid
-  token in development: use `wrangler access token <URL>` from the devcontainer, or
-  temporarily bypass the check by removing the header guard (revert after testing).
-- In production, ensure your operator browser session is authenticated with CF Access.
+- The `CF-Access-Jwt-Assertion` header is required. The simplest way to
+  get a valid token in development: run `cloudflared access login <URL>`
+  once in the operator console, then `cloudflared access token --app
+  <URL>`. Or temporarily bypass the check by removing the header guard
+  (revert after testing).
+- In production, ensure your operator browser session is authenticated
+  with CF Access.
 
 </details>
 
 <details>
 <summary>schema.sql apply fails: "table already exists"</summary>
 
-- `schema.sql` uses `CREATE TABLE IF NOT EXISTS` — this should never fail on a fresh
-  database. If you see this error, the schema was partially applied.
+- `schema.sql` uses `CREATE TABLE IF NOT EXISTS`. This should never fail
+  on a fresh database. If you see this error, the schema was partially
+  applied.
 - Run the SELECT on `sqlite_master` (step 3) to see which tables exist.
-- The schema is idempotent: re-running it is safe.
+- The schema is idempotent. Re-running it is safe.
+
+</details>
+
+<details>
+<summary>schema.sql apply fails: "PRAGMA not allowed (SQLITE_AUTH)"</summary>
+
+D1 rejects every `PRAGMA` statement and aborts schema execution on the
+first one. The shipped `schema.sql` has the `PRAGMA journal_mode = WAL`
+line removed; if you re-introduced it, drop the line. D1 runs in WAL
+mode by default, so the directive is unnecessary.
 
 </details>
 
 <details>
 <summary>Re-enrollment creates a duplicate row instead of upserting</summary>
 
-- D1 requires SQLite `ON CONFLICT` syntax. The prepared statement in `handleEnroll()`
-  uses `INSERT INTO ... ON CONFLICT(device_id) DO UPDATE SET ...`. If you edited the
-  Worker and changed this to `INSERT OR REPLACE`, a new `enrolled_at` is written and
-  the old row is deleted then re-inserted — functionally equivalent but changes
-  `enrolled_at`. Use the upsert form to preserve `enrolled_at`.
+- D1 requires SQLite `ON CONFLICT` syntax. The prepared statement in
+  `handleEnroll()` uses `INSERT INTO ... ON CONFLICT(device_id) DO
+  UPDATE SET ...`. If you edited the Worker and changed this to `INSERT
+  OR REPLACE`, a new `enrolled_at` is written and the old row is deleted
+  then re-inserted (functionally equivalent but changes `enrolled_at`).
+  Use the upsert form to preserve `enrolled_at`.
 
 </details>
 
@@ -391,20 +672,20 @@ directly for the audit log row. It exits 0 on success.
 
 ## Take-home extension
 
-The `sessions` table is created but unused in the in-class labs. As a take-home
-exercise, add a `/v1/sessions` endpoint to the Worker that:
+The `sessions` table is created but unused in the in-class labs. As a
+take-home exercise, add a `/v1/sessions` endpoint to the Worker that:
 
 1. Accepts a CF Access JWT in the header.
-2. Decodes the JWT (Workers have access to `crypto.subtle` for JWT verification using
-   the CF Access public key from `https://&lt;team&gt;.cloudflareaccess.com/cdn-cgi/access/certs`).
+2. Decodes the JWT (Workers have access to `crypto.subtle` for JWT
+   verification using the CF Access public key from
+   `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`).
 3. Inserts a session row with a UUID and a 1-hour expiry.
 4. Returns the session UUID.
 
-This gives you a server-side session store backed by D1 — useful for operator tooling
-that needs to correlate multiple requests without re-validating the JWT each time.
+This gives you a server-side session store backed by D1, useful for
+operator tooling that needs to correlate multiple requests without
+re-validating the JWT each time.
 
 See `take-home/lab09-sessions/` for the solution skeleton.
 
 ---
-
-<MarkCompleteButton client:load lab="lab09" />

@@ -55,6 +55,16 @@ failures later.
 > student assignment card. If you are using your own domain that is already
 > active in Cloudflare, substitute it wherever `eplabs.cloud` appears.
 
+> **TLS coverage for nested subdomains.** This workshop runs against
+> a shared parent zone (`eplabs.cloud`) with Cloudflare Advanced
+> Certificate Manager + Total TLS enabled, so per-hostname certificates
+> are auto-issued for every depth — `<slot>.eplabs.cloud`,
+> `api.<slot>.eplabs.cloud`, anything else under your slot. You do not
+> need a delegated zone; the records on your slot inherit the parent
+> zone's ACM coverage. (For the take-home BYO-domain track in
+> `handouts/workshop_domain_prerequisites.md`, you provision your own
+> root zone and rely on its own free Universal SSL.)
+
 ### Where each step runs
 
 This lab is pure cloud. Every command runs inside the operator console.
@@ -188,9 +198,11 @@ wrangler zones list 2>/dev/null || true
 
 <LabStep lab="lab04" id="dns-records" num={3} title="Create the required DNS records">
 
-Two records are needed. Create both in the Cloudflare dashboard
+Three records are needed. Create all three in the Cloudflare dashboard
 ([dash.cloudflare.com](https://dash.cloudflare.com)) under your domain's DNS
-settings.
+settings. The first two cover anything beneath the zone (`test.<domain>`,
+`api.<domain>`, etc.); the third covers the bare apex `<domain>` itself,
+because RFC 1034 wildcards do not match the zone apex.
 
 **Record 1: wildcard proxied `A` record (for Worker routing)**
 
@@ -220,27 +232,46 @@ or Tunnel, configured in later labs.
 This record is a no-op for traffic; it exists so `validate.sh` can confirm you
 have write access to the zone and that DNS resolution is working end-to-end.
 
-**Verify both records from the operator console:**
+**Record 3: apex proxied `A` record (so `<domain>` itself resolves)**
+
+| Field | Value |
+|-------|-------|
+| Type | A |
+| Name | `@` (apex — your dashboard may show this as the bare zone name) |
+| Content | `192.0.2.1` |
+| Proxy status | Proxied (orange cloud) |
+| TTL | Auto |
+
+The wildcard from Record 1 covers `anything.<domain>`, but DNS wildcards do
+not match the bare apex. Lab 06 (Tunnel) and Lab 07 (Worker) will replace
+the placeholder content with the real origin; for now the apex needs to
+exist so `curl https://<domain>/` reaches the Cloudflare proxy at all.
+
+**Verify all three records from the operator console:**
 
 ```sh
-# Test record (DNS only; resolves to the real IP you set):
+# Test record (DNS only — the configured IP is what clients see):
 dig +short A "test.${DOMAIN}" @1.1.1.1
 # Expected: 1.2.3.4
 
-# Wildcard record (proxied; Cloudflare returns its own anycast IP, not 192.0.2.1):
+# Wildcard record (proxied — Cloudflare answers with its own anycast IPs):
 dig +short A "validate-lab04-check.${DOMAIN}" @1.1.1.1
-# Expected: 192.0.2.1
-# (Proxied records with RFC5737 placeholder IPs return the placeholder;
-# CF only substitutes its own IP for publicly routable addresses.)
+# Expected: an IP in 104.16.0.0/13 or 172.64.0.0/13
+# (e.g. 104.21.94.82 or 172.67.221.71)
+# Cloudflare always intercepts proxied records and returns its anycast IPs
+# regardless of what you set as Content. The 192.0.2.1 placeholder is a
+# routing target CF only contacts when the record is DNS-only or the proxy
+# is in passthrough mode — neither applies to a proxied wildcard.
 ```
 
-> **Proxied wildcard behavior.** When a record is proxied and the content is an
-> RFC 5737 address (192.0.2.0/24, 198.51.100.0/24, or 203.0.113.0/24),
-> Cloudflare returns the configured IP rather than its anycast IP. This is
-> intentional for the workshop setup: `validate.sh` checks for `192.0.2.1` by
-> querying the resolver, and that check is meaningful because Cloudflare is
-> answering it (DNS delegation is confirmed), not because traffic actually
-> reaches 192.0.2.1.
+> **Proxied wildcard behavior.** A Proxied (orange cloud) record always
+> resolves to one of Cloudflare's public anycast IPs at the resolver level.
+> The configured Content (here `192.0.2.1`) is the placeholder origin CF
+> would forward to once the proxy decides traffic is legitimate; clients
+> never see it directly. `validate.sh` therefore checks that the wildcard
+> answer is in the published CF anycast ranges (104.16/13, 172.64/13).
+> Seeing `192.0.2.1` in `dig` output means the record is DNS-only (gray
+> cloud) and needs to be flipped to Proxied.
 
 </LabStep>
 

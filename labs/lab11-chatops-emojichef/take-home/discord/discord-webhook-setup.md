@@ -158,7 +158,7 @@ In your Discord server, type `/cmd` and press Tab. The slash command picker shou
 appear. In the `payload` field, paste one of the known test vectors:
 
 ```
-🥘🥫🥩🌯🥙🥘
+🍡🍼🍖🍦🍢🍌🍚🍸
 ```
 
 (Run the Node encoder from Lab 11 step 1 to get the correct encoding for "status" —

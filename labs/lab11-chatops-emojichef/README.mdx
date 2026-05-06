@@ -1,42 +1,67 @@
 ---
-title: "ChatOps with EmojiChef"
+title: "ChatOps EmojiChef"
 labNumber: 11
 duration: "60 minutes"
 day: "Day 2, Session 4"
 hardwareRequired: false
-widgets: ["MarkCompleteButton", "ValidateOutputPaster", "EmojiChef"]
+codespaces: "supported"
+widgets: ["EnvironmentToggle", "LabProgress", "LabStep", "EnvBlock", "EmojiChef", "ValidateOutputPaster", "MarkCompleteButton"]
 ---
 
-import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
-import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
+import EnvironmentToggle from '@widgets/EnvironmentToggle.svelte';
+import LabProgress from '@widgets/LabProgress.svelte';
+import LabStep from '@widgets/LabStep.astro';
+import EnvBlock from '@widgets/EnvBlock.astro';
 import EmojiChef from '@widgets/EmojiChef.svelte';
+import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
+import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
 
-# Lab 11 — ChatOps with EmojiChef
+<EnvironmentToggle client:load />
+
+<LabProgress lab="lab11" client:load steps={[
+  { id: 'inspect',  label: '1. Inspect the chatops handler and EmojiChef encoder' },
+  { id: 'encoder',  label: '2. Run the EmojiChef encoder, generate a payload' },
+  { id: 'repo',     label: '3. Designate a workshop repo and create issue #1' },
+  { id: 'pat',      label: '4. Generate a fine-grained PAT (Issues: read+write)' },
+  { id: 'secrets',  label: '5. Set Worker secrets and [vars]; redeploy' },
+  { id: 'webhook',  label: '6. Configure the repo webhook' },
+  { id: 'invoke',   label: '7. Post a test comment; watch wrangler tail' },
+  { id: 'verify',   label: '8. Confirm the bot reply in the issue' },
+  { id: 'validate', label: '9. Run validate.sh' },
+]} />
+
+# Lab 11 — ChatOps EmojiChef
 
 **Duration: 60 minutes**
-**Day:** 2, Session 4
 
-Operators do not type commands in plaintext. They post what looks like a food appreciation
-thread in a Discord channel, and the Worker decodes it into an authenticated command that
-gets dispatched to the correct device. This is EmojiChef: a steganographic encoding scheme
-that uses Cloudflare's food emoji range (U+1F345 through U+1F37F) as a 6-bit-per-emoji
-quasi-base64 alphabet.
+Operators do not type commands in plaintext. They post what looks like a
+food appreciation thread in a GitHub issue, and the Worker decodes it
+into an authenticated command that gets dispatched to the correct
+device. EmojiChef is the encoder behind that step: a custom Base64
+where every "digit" is one emoji, drawn from a 64-codepoint range that
+starts at the tomato 🍅 and ends at the christmas tree 🎄.
 
-In this lab you configure a Discord webhook that fires at your Worker, implement the
-signature verification and decoder in the Worker, and wire the decoded command into the
-KV job queue from Lab 10. When it works, typing "🥘🥫🥩🌯🥙🥘" in Discord silently
-enqueues a `status` job for a device — and an entry appears in the D1 audit log.
+In this lab you configure a GitHub repository webhook that fires at
+your Worker, verify the HMAC-SHA256 signature, decode the emoji
+payload, and wire the decoded command into the KV job queue from
+Lab 10. When it works, posting `@alpha 🍡🍼🍖🍦🍢🍌🍚🍸` as a comment
+on issue #1 silently enqueues a `status` job and the Worker replies in
+the same thread.
 
 ---
 
 ## Learning objectives
 
-- Understand the EmojiChef encoding scheme: base codepoint, 6-bit windows, byte assembly.
-- Verify Discord webhook signatures using Ed25519 and the Web Crypto API.
-- Handle Discord's PING/PONG interaction verification flow.
-- Wire the decoded command into the Lab 10 job queue (`enqueueJob` / `RATE_LIMITS` KV).
-- Configure a Discord outbound webhook to call a Worker route.
-- Test known encoding vectors end-to-end.
+- Understand the EmojiChef encoding scheme: base codepoint, 6-bit windows,
+  byte assembly.
+- Verify GitHub webhook signatures with HMAC-SHA256 and the `X-Hub-Signature-256`
+  header.
+- Parse the GitHub issue comment event envelope, extract the command payload,
+  and guard against reply loops.
+- Wire the decoded command into the Lab 10 job queue (`enqueueJob` /
+  `RATE_LIMITS` KV).
+- Configure a GitHub repository webhook and a fine-grained PAT scoped to a
+  single repo.
 
 ---
 
@@ -49,54 +74,163 @@ Before starting, confirm:
 bash courses/engagement-platform-labs/labs/lab10-kv-r2-storage/validate.sh
 
 # DOMAIN is exported
-echo "&#36;\{DOMAIN\}"
+echo "${DOMAIN}"
+
+# wrangler is authenticated
+npx wrangler whoami
 ```
 
-You also need:
-- A Discord account.
-- A Discord server where you have "Manage Webhooks" permission (create a test server for
-  the workshop if needed — it takes 30 seconds).
+You also need a GitHub account and a repository you control (your fork of
+`epl-student-starter` works; a fresh empty repo is fine too).
+
+<EnvBlock env="codespace">
+
+> **Codespace users:** wrangler is pre-installed in the operator console.
+> Run `npx wrangler whoami` to confirm your session is active. If it is not,
+> run `npx wrangler login` again.
+
+</EnvBlock>
+
+---
+
+## Where each step runs
+
+This is a pure cloud lab. No bench hardware is involved.
+
+| Step | Operator console |
+|------|:----------------:|
+| 1-9. All steps | yes |
+| Validation     | yes |
 
 ---
 
 ## Walkthrough
 
-### 1. Understand the EmojiChef encoding scheme
+<LabStep lab="lab11" id="inspect" num={1} title="Inspect the chatops handler and EmojiChef encoder">
 
-The encoder maps ASCII text to Cloudflare's food emoji block:
+Open `labs/lab07-first-worker/worker/src/index.js` and read
+`handleGithubChatops()`. Key behaviors:
 
-| ASCII | Binary (8 bits) | 6-bit chunks | Emojis |
-|-------|-----------------|--------------|--------|
-| `H`   | 01001000        | 010010 00    |        |
-| `S`   | 01010011        | (carried)    |        |
-| `C`   | 01000011        |              |        |
+- **Signature verification:** GitHub signs every request with HMAC-SHA256
+  using your webhook secret. The Worker reads `X-Hub-Signature-256` and
+  recomputes the digest over the raw request body. Requests with missing or
+  mismatched signatures are rejected with HTTP 401.
+- **Loop protection:** The Worker drops any comment whose body starts with
+  `[eplabs:result]` (its own replies) or that was authored by a bot user
+  (`sender.type === "Bot"`). Duplicate `X-GitHub-Delivery` IDs within 600
+  seconds are also rejected.
+- **Prefix gate:** The comment body must start with `@${STUDENT_SLOT} ` (the
+  student's slot, e.g. `@alpha`). The Worker strips the prefix before passing
+  the remainder to EmojiChef.
+- **Decode and dispatch:** `EmojiChefQuick.decode()` converts the emoji string
+  to ASCII. The first whitespace-delimited token is the command name; remaining
+  tokens are args.
+- **Command vocabulary:** `status`, `reboot`, `capture`, `list`, `ping`,
+  `exec`, `fetch`, and `HSC` are valid commands. Unknown commands return 422
+  with a list of known commands.
+- **Result post:** Uses the GitHub Issues API to post a reply on the same
+  issue. The reply body begins with `[eplabs:result] @${STUDENT_SLOT}`.
 
-The binary stream is cut into 6-bit windows; each window value `n` maps to codepoint
-`0x1F345 + n`. The last incomplete 6-bit window is dropped (so encoded length is always
-`floor(len(ascii) * 8 / 6)` emoji characters).
+Also find the `EmojiChefQuick` class near the top of
+`labs/lab07-first-worker/worker/src/index.js` (around line 50). The
+encoder and decoder are tiny:
 
-Try the encoder live below, then verify the known test vectors. The widget uses the same
-`EmojiChefQuick` class lifted directly from the Worker source — what you type here is
-what the Worker decodes.
+1. **Encode.** Pad the ASCII input to the next multiple of 3 bytes with
+   NUL (`\0`). Concatenate each byte's 8-bit binary form into one
+   bitstream and cut into 6-bit chunks. Each chunk value `n` (0–63)
+   maps to codepoint `0x1F345 + n`, one of the 64 emoji from 🍅
+   (offset 0) to 🎄 (offset 63).
+2. **Decode.** Reverse the chunking and strip trailing NUL bytes.
+
+Two design choices are worth understanding:
+
+- **Why NUL-pad to a multiple of 3 bytes?** The bit count of the padded
+  input is divisible by both 8 and 6, so the encoder always emits a
+  clean bitstream and the decoder always recovers a clean byte stream.
+  Without the pad, any input whose length is not a multiple of 3 loses
+  a partial trailing byte on round-trip.
+- **Why does the range extend past 🍿 to 🎄?** A 6-bit chunk has 64
+  possible values (0–63), but the food block 🍅..🍿 covers only 59
+  codepoints. The alphabet extends into the celebration block
+  (🎀🎁🎂🎃🎄) to cover the remaining 5 values. When those appear in
+  encoded output, that is a "high digit": an input byte sequence
+  happened to include a chunk of value 59–63. The 6-char string
+  `reboot` is the canonical example; it produces 🎂 in chunk 7.
+
+Length-mod-3 inputs (`status` is 6 bytes, `HSC` is 3 bytes) need no
+padding and produce the same encoding a no-pad implementation would
+produce. Other lengths see one or two trailing 🍅 (offset 0 = NUL) at
+the end of the encoded form. Encoded output length is always
+`Math.ceil(len(text)/3) * 4` emoji.
+
+#### Customize the alphabet (optional)
+
+The class has two knobs you can change: the base codepoint and the
+emoji-block extent. Both live in the constructor:
+
+```js
+constructor() {
+    this.base = 0x1F345;     // 🍅 tomato
+    this.maxEmoji = 0x1F384; // 🎄 christmas tree (offsets 0..63)
+    this.bitsPerEmoji = 6;
+}
+```
+
+**Move the alphabet.** Point `base` at any Unicode codepoint that
+begins a 64-codepoint contiguous range, and set
+`maxEmoji = base + 63`. Re-encode `status` and you get a different
+emoji string that still round-trips. The Worker's command vocabulary
+is unaffected; only the visual surface changes.
+
+```js
+// Face emoji alphabet (😀 grinning face → 🙿)
+this.base = 0x1F600;
+this.maxEmoji = 0x1F63F;
+```
+
+Two larger customizations are worth knowing about, neither required
+for the workshop:
+
+- **Curated alphabet (lookup table).** Replace the contiguous-range
+  arithmetic with an explicit 64-element array of hand-chosen emoji
+  from across Unicode. Lets you stay food-themed past 🍿 (e.g. add
+  🥑 🥕 🍞 🥩 to fill offsets 59–63 instead of 🎀🎁🎂🎃🎄). The
+  encoder and decoder become table lookups (`alphabet[n]` and a
+  reverse-map) instead of base + offset arithmetic.
+- **Change `bitsPerEmoji`.** Drop to 5 bits (32-emoji alphabet, no
+  high-digit emoji needed, encoded output is 20% bigger) or go to 8
+  bits (256-emoji alphabet, fewer emoji per byte, but harder to find
+  a contiguous 256-codepoint emoji range). The padding rule changes
+  too: pad to a multiple of `LCM(8, bitsPerEmoji) / 8` bytes.
+
+</LabStep>
+
+<LabStep lab="lab11" id="encoder" num={2} title="Run the EmojiChef encoder, generate a payload">
+
+Use the live widget below to encode and decode strings. Enter `status`, `HSC`,
+or `reboot` and copy the emoji output.
 
 <EmojiChef client:load />
 
-> **Note:** The static test-vector table from the original README has been replaced by
-> the live widget above. Enter `HSC`, `status`, or `reboot` to verify the canonical
-> vectors interactively. The widget also supports the "regenerate" button to call
-> `/api/playground/emojichef/encode` against the live Worker.
-
-Verify the vectors yourself using Node if preferred:
+Verify the test vectors with Node if preferred. The encoder pads input
+to the next multiple of 3 bytes with NUL (`\0`); the decoder strips
+trailing NUL pad bytes. This makes round-trip lossless for any ASCII
+input length:
 
 ```sh
 cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
 node -e "
 const BASE = 0x1F345;
-const encode = t => [...t].reduce((b, c) => b + c.charCodeAt(0).toString(2).padStart(8,'0'), '')
-    .match(/.{6}/g).map(s => String.fromCodePoint(BASE + parseInt(s,2))).join('');
+const encode = t => {
+    const pad = (3 - t.length % 3) % 3;
+    const padded = t + '\0'.repeat(pad);
+    return [...padded].reduce((b, c) => b + c.charCodeAt(0).toString(2).padStart(8,'0'), '')
+        .match(/.{6}/g).map(s => String.fromCodePoint(BASE + parseInt(s,2))).join('');
+};
 const decode = e => [...e].map(c => (c.codePointAt(0) - BASE).toString(2).padStart(6,'0')).join('')
-    .match(/.{8}/g).map(s => String.fromCharCode(parseInt(s,2))).join('');
-['HSC','status','reboot'].forEach(t => console.log(t, '->', encode(t), '-> decoded:', decode(encode(t))));
+    .match(/.{8}/g).map(s => String.fromCharCode(parseInt(s,2))).join('').replace(/\0+\$/, '');
+['HSC','status','reboot','capture','list','capture 30']
+    .forEach(t => console.log(t, '->', encode(t), '-> decoded:', decode(encode(t))));
 "
 ```
 
@@ -104,160 +238,196 @@ Expected output:
 
 ```
 HSC -> 🍗🍊🍒🍈 -> decoded: HSC
-status -> 🥘🥫🥩🌯🥙🥘 -> decoded: status
-reboot -> 🍱🥤🥩🥓🥨🥯🌯 -> decoded: reboot
+status -> 🍡🍼🍖🍦🍢🍌🍚🍸 -> decoded: status
+reboot -> 🍡🍫🍚🍧🍠🍻🎂🍹 -> decoded: reboot
+capture -> 🍝🍻🍊🍵🍢🍌🍚🍷🍞🍕🍅🍅 -> decoded: capture
+list -> 🍠🍋🍪🍸🍢🍅🍅🍅 -> decoded: list
+capture 30 -> 🍝🍻🍊🍵🍢🍌🍚🍷🍞🍗🍅🍸🍑🍅🍅🍅 -> decoded: capture 30
 ```
 
-### 2. Review the Worker chatops endpoint
+The trailing 🍅 (offset 0) emoji visible in padded encodings are the
+NUL pad bytes; the decoder strips them on read. The full set of test
+vectors is in `test-vectors.txt` in this lab directory.
 
-Open `labs/lab07-first-worker/worker/src/index.js` and read `handleDiscordChatops()`.
-Key behaviors:
+</LabStep>
 
-- **PING response:** Discord sends a `{ type: 1 }` payload when first configuring the
-  webhook URL to verify the endpoint is live. The Worker responds immediately with
-  `{ type: 1 }`. This must work before Discord will accept the URL.
-- **Signature verification:** Discord signs every request with Ed25519 using your app's
-  public key. The Worker verifies using `X-Signature-Ed25519` and `X-Signature-Timestamp`
-  headers. Verification is skipped if `DISCORD_PUBLIC_KEY` is not set (dev mode only).
-- **Emoji extraction:** The Worker looks for the emoji string in `payload.content` (simple
-  messages) or `payload.data.options[0].value` (slash command interactions).
-- **Decode and dispatch:** `EmojiChefQuick.decode()` converts the emoji string to ASCII.
-  The first whitespace-delimited token is the command name; remaining tokens are args.
-- **Command vocabulary:** `status`, `reboot`, `capture`, `list`, `ping`, `exec`, `fetch`,
-  and `HSC` are valid commands. Unknown commands return 422 with a list of known commands.
-- **Enqueue:** Uses `enqueueJob()` — the same function `handleCommand()` uses — so the
-  resulting KV job is identical in shape and can be read via `/v1/jobs/&lt;id&gt;`.
+<LabStep lab="lab11" id="repo" num={3} title="Designate a workshop repo and create issue #1">
 
-### 3. Set the Discord public key as a Worker secret
+The Worker reads `GITHUB_OWNER`, `GITHUB_REPO`, and `GITHUB_ISSUE_NUMBER` from
+its `[vars]` to know where to post replies. Issue #1 in your repo is the
+canonical command queue for this lab.
 
-You will create the Discord app in steps 4-5 and get the public key there. For now,
-note the pattern for setting it:
+1. Go to your workshop GitHub repo (fork of `epl-student-starter` or a fresh
+   repo). If you do not have one, create a new empty public repo now.
+
+2. Open the **Issues** tab and click **New issue**.
+
+3. Title it `EPL Command Queue` (or anything recognizable). Click
+   **Submit new issue**.
+
+4. Note the issue number in the URL. It should be `#1` if this is the first
+   issue in the repo.
+
+Note your values for the next step:
+
+```
+GITHUB_OWNER=<your-github-username>
+GITHUB_REPO=<your-repo-name>
+GITHUB_ISSUE_NUMBER=1
+```
+
+</LabStep>
+
+<LabStep lab="lab11" id="pat" num={4} title="Generate a fine-grained PAT (Issues: read+write)">
+
+The Worker needs a token to post replies. Generate a fine-grained token scoped
+to Issues on this one repo only. See
+`github-issue-chatops-setup.md` in this lab directory for the full click-by-click
+walkthrough; the abbreviated path is:
+
+1. GitHub **Settings** (avatar menu, top right).
+2. **Developer settings** (bottom of the left sidebar).
+3. **Personal access tokens** > **Fine-grained tokens** > **Generate new token**.
+4. **Token name:** `eplabs-chatops-<your-slot>`.
+5. **Expiration:** 30 days (or workshop duration).
+6. **Repository access:** "Only select repositories" > choose your workshop repo.
+7. **Permissions > Repository permissions > Issues:** set to **Read and write**.
+8. Leave all other permissions at their defaults (no access).
+9. Click **Generate token** and copy the token immediately (you will not see it
+   again).
+
+Keep the token value; you will need it in the next step.
+
+</LabStep>
+
+<LabStep lab="lab11" id="secrets" num={5} title="Set Worker secrets and [vars]; redeploy">
+
+Generate a random webhook secret:
+
+```sh
+openssl rand -hex 32
+# or:
+python3 -c 'import secrets; print(secrets.token_hex(32))'
+```
+
+Copy the output. This is your `GITHUB_WEBHOOK_SECRET`. Store it somewhere safe
+for this lab session. You will paste it into both the Worker and the GitHub
+webhook configuration.
+
+Set the secrets:
 
 ```sh
 cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
-# Run this after you have the public key from Discord (step 5)
-npx wrangler secret put DISCORD_PUBLIC_KEY
-# Paste the hex public key at the prompt
+
+npx wrangler secret put GITHUB_WEBHOOK_SECRET
+# paste the 64-char hex string at the prompt
+
+npx wrangler secret put GITHUB_TOKEN
+# paste the fine-grained PAT from step 4
 ```
 
-Worker secrets are encrypted at rest. Do not put the public key in `wrangler.toml`
-`[vars]` — use `wrangler secret put` only.
+Open `worker/wrangler.toml` and add the `[vars]` entries for your repo:
 
-### 4. Create a Discord application
-
-1. Open [discord.com/developers/applications](https://discord.com/developers/applications).
-2. Click **New Application**. Name it `eplabs-chatops-<your-student-id>`.
-3. In the **General Information** tab, copy the **Public Key** (64-char hex string).
-4. In the **Bot** tab (if present), you can leave it off — we use Outgoing Webhooks, not
-   a bot for this lab.
-
-See `discord-webhook-setup.md` in this lab directory for a click-by-click guide with
-screenshots.
-
-### 5. Configure the interactions endpoint URL
-
-In your Discord application's **General Information** tab:
-
-1. Find the **Interactions Endpoint URL** field.
-2. Enter: `https://api.&#36;\{DOMAIN\}/v1/chatops/discord`
-   (substitute your actual domain).
-3. Click **Save Changes**.
-
-Discord immediately sends a PING (`{ type: 1 }`) to verify the endpoint. If the Worker
-responds correctly, Discord saves the URL. If the PING fails, you see an error — check
-the wrangler tail output.
-
-Before setting the URL, set the public key secret so the PING is verified correctly:
-
-```sh
-# In the worker/ directory:
-npx wrangler secret put DISCORD_PUBLIC_KEY
-# <paste the 64-char hex Public Key from your Discord app>
+```toml
+[vars]
+# ... existing vars ...
+GITHUB_OWNER = "your-github-username"
+GITHUB_REPO = "your-repo-name"
+GITHUB_ISSUE_NUMBER = "1"
+STUDENT_SLOT = "alpha"
 ```
 
-Redeploy after setting the secret:
+Replace `alpha` with your assigned slot (e.g. `bravo`, `charlie`).
+
+Redeploy the Worker so the new vars and secrets are active:
 
 ```sh
 npx wrangler deploy
 ```
 
-### 6. Create an outbound webhook in a Discord server
+</LabStep>
 
-This is the channel webhook that fires when you post a message:
+<LabStep lab="lab11" id="webhook" num={6} title="Configure the repo webhook">
 
-1. In your Discord server, open a channel's settings (gear icon or right-click >
-   Edit Channel).
-2. Go to **Integrations** > **Webhooks** > **New Webhook**.
-3. Name it `EmojiChef` and select the channel.
-4. Copy the webhook URL — you do not need this in the Worker, but it is useful for
-   testing by POSTing to Discord as if a user sent a message.
+In your GitHub repository:
 
-For the chatops flow (Discord -> Worker), the mechanism is:
-- **Discord Slash Commands** (recommended) — Discord calls your Interactions Endpoint
-  URL when a user runs a slash command. The Worker receives a JSON body with
-  `data.options[0].value` containing the emoji string.
-- **Outgoing Webhooks** — older mechanism; Discord sends a POST to your URL when a
-  message matches a trigger word. Less reliable, not all server types support it.
+1. Go to **Settings** > **Webhooks** > **Add webhook**.
+2. **Payload URL:** `https://api.${DOMAIN}/v1/chatops/github`
+   (substitute your actual domain).
+3. **Content type:** `application/json`.
+4. **Secret:** paste the hex string you generated in step 5.
+5. Under **Which events would you like to trigger this webhook?** select
+   "Let me select individual events". Uncheck **Pushes**, then check
+   **Issue comments** only.
+6. Make sure **Active** is checked.
+7. Click **Add webhook**.
 
-For the workshop, use the slash command approach (step 7).
+GitHub immediately sends a `ping` event. Open **Recent Deliveries** on the
+webhook settings page. You should see the ping with HTTP 204 (the Worker
+ignores pings) or HTTP 401 (bad secret: recheck the hex you pasted).
 
-See `discord-webhook-setup.md` for the full walkthrough.
+See `github-issue-chatops-setup.md` in this lab directory for the full
+walkthrough including screenshots.
 
-### 7. Register a slash command
+</LabStep>
 
-Register a slash command that takes an emoji string as its argument:
+<LabStep lab="lab11" id="invoke" num={7} title="Post a test comment; watch wrangler tail">
 
-```sh
-# Replace APP_ID and BOT_TOKEN with your Discord app credentials.
-# APP_ID is shown in the application General Information page.
-# BOT_TOKEN: go to Bot tab > Reset Token > copy.
-
-APP_ID="your-discord-app-id"
-BOT_TOKEN="your-discord-bot-token"
-
-curl -s -X POST \
-    "https://discord.com/api/v10/applications/&#36;\{APP_ID\}/commands" \
-    -H "Authorization: Bot &#36;\{BOT_TOKEN\}" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "name": "cmd",
-        "description": "Send an encoded command to the engagement platform",
-        "options": [{
-            "type": 3,
-            "name": "payload",
-            "description": "Emoji-encoded command string",
-            "required": true
-        }]
-    }' | jq .
-```
-
-The command is now available in your server as `/cmd <emoji-string>`.
-
-### 8. Test with known vectors
-
-In your Discord server, type:
-
-```
-/cmd 🥘🥫🥩🌯🥙🥘
-```
-
-This should dispatch a `status` job. Verify in the Worker:
+Start tailing Worker logs in a terminal:
 
 ```sh
-# Watch wrangler tail for the decoded request
+cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
 npx wrangler tail --format pretty
 ```
 
-You should see a log entry showing `decoded: "status"`, `job_id: &lt;uuid&gt;`.
+In a second terminal (or a browser), post a comment on your issue #1:
 
-Then read the job back:
-
-```sh
-# Copy the job_id from the wrangler tail output and check KV
-curl -s "https://api.&#36;\{DOMAIN\}/v1/jobs/<job-id-from-tail>" | jq .
+```
+@alpha 🍡🍼🍖🍦🍢🍌🍚🍸
 ```
 
-Expected response:
+Replace `@alpha` with your actual `STUDENT_SLOT` value.
+
+In the `wrangler tail` output you should see a log entry showing:
+
+```
+decoded: "status"   job_id: <uuid>   slot: alpha
+```
+
+The comment body `🍡🍼🍖🍦🍢🍌🍚🍸` decodes to the ASCII string `status`.
+
+You can also post the comment via the GitHub API:
+
+```sh
+curl -s -X POST \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues/${GITHUB_ISSUE_NUMBER}/comments" \
+  -d '{"body":"@alpha 🍡🍼🍖🍦🍢🍌🍚🍸"}'
+```
+
+(Replace the emoji unicode escapes with the actual emoji string `🍡🍼🍖🍦🍢🍌🍚🍸`
+when typing in a shell that supports it.)
+
+</LabStep>
+
+<LabStep lab="lab11" id="verify" num={8} title="Confirm the bot reply in the issue">
+
+Reload your GitHub issue page. The Worker should have posted a reply comment
+whose body starts with:
+
+```
+[eplabs:result] @alpha status: queued, job_id: <uuid>
+```
+
+Confirm the job is also in KV:
+
+```sh
+JOB_ID="paste-job-id-here"
+curl -s "https://api.${DOMAIN}/v1/jobs/${JOB_ID}" | jq .
+```
+
+Expected:
 
 ```json
 {
@@ -268,52 +438,39 @@ Expected response:
   "status": "queued",
   "created_at": "...",
   "timeout": 60,
-  "source": "discord_chatops",
-  "author": "<your-discord-username>"
+  "source": "github_chatops",
+  "author": "<your-github-username>"
 }
 ```
 
-Test all three known vectors:
+Try all three known test vectors from issue #1:
 
-```
-/cmd 🍗🍊🍒🍈       → decodes to "HSC"
-/cmd 🥘🥫🥩🌯🥙🥘   → decodes to "status"
-/cmd 🍱🥤🥩🥓🥨🥯🌯 → decodes to "reboot"
-```
+| Comment body | Decoded command |
+|---|---|
+| `@alpha 🍗🍊🍒🍈` | `HSC` |
+| `@alpha 🍡🍼🍖🍦🍢🍌🍚🍸` | `status` |
+| `@alpha 🍡🍫🍚🍧🍠🍻🎂🍹` | `reboot` |
 
-### 9. Test without Discord (direct HTTP)
+Each should produce a separate `[eplabs:result]` reply and a KV job entry.
 
-You can also test the endpoint directly without Discord by posting a payload and skipping
-signature verification (only safe because `DISCORD_PUBLIC_KEY` is set — remove it
-temporarily for this test or use a `--dev` flag in your own fork):
+</LabStep>
 
-```sh
-# Direct test — bypasses signature check by omitting the header.
-# Only works if DISCORD_PUBLIC_KEY is temporarily unset in the Worker.
-curl -s \
-    -X POST "https://api.&#36;\{DOMAIN\}/v1/chatops/discord" \
-    -H "Content-Type: application/json" \
-    -H "X-Signature-Ed25519: deadbeef" \
-    -H "X-Signature-Timestamp: $(date +%s)" \
-    -d '{"content": "🥘🥫🥩🌯🥙🥘"}' | jq .
-```
-
-With `DISCORD_PUBLIC_KEY` set, this returns 401. Use the validate.sh script (step 10)
-which constructs a properly signed test payload.
-
-### 10. Run validation
+<LabStep lab="lab11" id="validate" num={9} title="Run validate.sh">
 
 ```sh
 chmod +x courses/engagement-platform-labs/labs/lab11-chatops-emojichef/validate.sh
 export DOMAIN="<your-domain>"
+# GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO, GITHUB_ISSUE_NUMBER, STUDENT_SLOT
+# are read from the environment or from wrangler.toml [vars]
 courses/engagement-platform-labs/labs/lab11-chatops-emojichef/validate.sh
 ```
 
-The validate script signs test payloads with a throwaway Ed25519 key and posts them
-to the Worker. It then reads the resulting KV jobs and asserts the decoded commands
-match. For the signature check, the script sets `DISCORD_PUBLIC_KEY` to its throwaway
-public key via `wrangler secret put` before running — see the script header for the
-required environment variables.
+The script posts a fresh `@<slot> 🍡🍼🍖🍦🍢🍌🍚🍸` comment using your
+`GITHUB_TOKEN`, then polls the issue for the bot's reply for up to 30 seconds.
+It asserts that the reply body starts with `[eplabs:result] @<slot>` and that
+the decoded command is `status`.
+
+</LabStep>
 
 ---
 
@@ -321,22 +478,37 @@ required environment variables.
 
 When this lab is complete:
 
-- [ ] Discord application exists with the Interactions Endpoint URL set.
-- [ ] `DISCORD_PUBLIC_KEY` is set as a Worker secret.
-- [ ] `/v1/chatops/discord` responds to the Discord PING with `{ type: 1 }`.
-- [ ] Posting `🥘🥫🥩🌯🥙🥘` via Discord or curl dispatches a `status` job.
-- [ ] The job appears in KV (readable via `/v1/jobs/&lt;id&gt;`).
-- [ ] An `audit_log` row with action `"chatops_dispatch"` exists in D1.
+- [ ] `GITHUB_WEBHOOK_SECRET` and `GITHUB_TOKEN` are set as Worker secrets.
+- [ ] `wrangler.toml` `[vars]` contains `GITHUB_OWNER`, `GITHUB_REPO`,
+      `GITHUB_ISSUE_NUMBER`, and `STUDENT_SLOT`.
+- [ ] The GitHub webhook fires on issue comment events and shows HTTP 204 or
+      200 in GitHub's **Recent Deliveries** panel.
+- [ ] Posting `@<slot> 🍡🍼🍖🍦🍢🍌🍚🍸` on issue #1 produces a
+      `[eplabs:result]` reply and a KV job with `command: "status"`.
+- [ ] `validate.sh` exits 0.
 
 ---
 
 ## Validation
 
+Three paths. All call the same `validate.sh`; only the delivery channel
+differs.
+
+**Path 1: `epl` CLI** (recommended from the operator console).
+
 ```sh
-chmod +x courses/engagement-platform-labs/labs/lab11-chatops-emojichef/validate.sh
-export DOMAIN="<your-domain>"
-courses/engagement-platform-labs/labs/lab11-chatops-emojichef/validate.sh
+epl validate lab11-chatops-emojichef
 ```
+
+**Path 2: direct script.**
+
+```sh
+bash courses/engagement-platform-labs/labs/lab11-chatops-emojichef/validate.sh
+```
+
+**Path 3: paste output into the widget.**
+
+Run `validate.sh` anywhere, copy the full terminal output, and paste it below.
 
 <ValidateOutputPaster client:load lab="lab11" />
 
@@ -345,70 +517,120 @@ courses/engagement-platform-labs/labs/lab11-chatops-emojichef/validate.sh
 ## Troubleshooting
 
 <details>
-<summary>Discord rejects the Interactions Endpoint URL: "URL is not correctly configured"</summary>
+<summary>GitHub webhook shows HTTP 401 "Unauthorized" in Recent Deliveries</summary>
 
-- Discord sent a PING and your Worker did not respond with `{ type: 1 }`.
-- Check `wrangler tail` for errors. Common causes:
-  - `DISCORD_PUBLIC_KEY` secret is not set, or the value is wrong (wrong app, extra
-    whitespace). Set it again: `wrangler secret put DISCORD_PUBLIC_KEY`.
-  - The Worker was not redeployed after setting the secret.
-  - The route `api.<DOMAIN>/v1/chatops/discord` is not matched by the `api.<DOMAIN>/v1/*`
-    route in wrangler.toml (unlikely but check for typos).
+The HMAC-SHA256 signature did not match. The most common cause is a mismatch
+between the secret you typed into the GitHub webhook configuration and the
+`GITHUB_WEBHOOK_SECRET` value in the Worker.
 
-</details>
+Steps to fix:
 
-<details>
-<summary>POST /v1/chatops/discord returns 401 "Invalid request signature"</summary>
-
-- The signature verification failed. Verify `DISCORD_PUBLIC_KEY` matches the hex
-  Public Key shown in your Discord application's General Information tab exactly.
-- If you are testing with curl directly (not through Discord), you must either omit
-  the signature headers when `DISCORD_PUBLIC_KEY` is unset, or construct a valid
-  Ed25519 signature. See the validate.sh script for how to do the latter.
+1. Generate a fresh secret with `openssl rand -hex 32`.
+2. Run `npx wrangler secret put GITHUB_WEBHOOK_SECRET` and paste the new value.
+3. Run `npx wrangler deploy` to push the updated secret.
+4. Edit the GitHub webhook (Settings > Webhooks > your webhook > Edit) and
+   paste the same new value into the **Secret** field.
+5. Click **Update webhook**. GitHub sends a new ping; check Recent Deliveries.
 
 </details>
 
 <details>
-<summary>POST /v1/chatops/discord returns 422 "Unknown command"</summary>
+<summary>GitHub webhook shows HTTP 204 for the ping but no response for issue comments</summary>
 
-- The emoji string decoded to a command name not in the vocabulary.
-- Use the EmojiChef widget above to verify your encoding before posting.
-- The vocabulary is: `status`, `reboot`, `capture`, `list`, `ping`, `exec`, `fetch`, `HSC`.
+The Worker returns 204 for ping events (the `action` field is absent on ping
+payloads). If issue comment events are also returning 204, the event filter
+may not be set correctly.
+
+- Re-open the webhook settings and confirm **Issue comments** is the only
+  checked event.
+- Check that the comment body starts with `@<STUDENT_SLOT> ` (with a trailing
+  space). The prefix gate rejects comments that do not start with the correct
+  slot marker.
 
 </details>
 
 <details>
-<summary>Emoji paste in Discord loses characters / shows differently</summary>
+<summary>Worker posts a reply but then immediately processes it again (loop)</summary>
 
-- Some Discord clients transform emoji codepoints. Paste from `test-vectors.txt` using
-  a terminal copy-paste (not the Discord emoji picker) to preserve the exact codepoints.
-- Verify the codepoint range in the terminal: `printf '%s' '🥘' | xxd | head`
-  should show `f0 9f a5 98` (U+1F958 = 0x1F345 + 0x613 = 🥘).
+The loop-protection sentinel `[eplabs:result]` must appear at the very start of
+the Worker's reply body. Check your Worker source for the `handleGithubChatops`
+reply format. The reply body must begin with `[eplabs:result]`; any whitespace
+before it breaks the guard.
 
 </details>
+
+<details>
+<summary>validate.sh times out waiting for the bot reply</summary>
+
+The Worker may be slow on the first invocation after a cold start. Run the
+script again; subsequent runs should be faster.
+
+If the timeout repeats:
+
+- Confirm `GITHUB_TOKEN` in the Worker secrets has Issues write permission on
+  the correct repo.
+- Check `wrangler tail` for errors in the reply POST.
+- Confirm `GITHUB_OWNER`, `GITHUB_REPO`, and `GITHUB_ISSUE_NUMBER` in
+  `wrangler.toml` `[vars]` match the repo where you are posting comments.
+
+</details>
+
+<details>
+<summary>POST /v1/chatops/github returns 422 "Unknown command"</summary>
+
+The emoji string decoded to a command name not in the vocabulary. Use the
+EmojiChef widget above to verify your encoding before posting. The vocabulary
+is: `status`, `reboot`, `capture`, `list`, `ping`, `exec`, `fetch`, `HSC`.
+
+</details>
+
+---
+
+## Primitives and drop-in substitutes
+
+The observable behavior of this lab is an **asynchronous out-of-band command
+queue with built-in audit trail**: an operator posts a message to an external
+service; the Worker receives it, authenticates the source, decodes the payload,
+enqueues a job, and posts a result back to the same thread.
+
+The transport layer is the only thing that changes between systems. The EmojiChef
+encoder, KV job queue, Tailnet dispatch, and R2 signed URL mechanisms are
+identical regardless of which transport you use.
+
+| Transport | Authentication | Protocol | Invocation form |
+|---|---|---|---|
+| **GitHub Issues** (this lab) | HMAC-SHA256 webhook secret | HTTPS POST | Issue comment starting with `@<slot>` |
+| Discord (take-home) | Ed25519 application public key | HTTPS POST | Slash command or message interaction |
+| Slack | Signing secret + timestamp | HTTPS POST | Slash command or app mention |
+| Mattermost | Token in header or signing | HTTPS POST | Slash command |
+| Matrix | Access token | HTTPS PUT | Room message event |
+| Telegram | Bot API token in URL path | HTTPS POST | Webhook update |
+| MQTT broker | TLS client cert or username/password | MQTT 3.1.1 / 5.0 | Topic publish |
+
+Switching transports requires changing only the webhook handler and the secrets.
+No Worker route logic, no job-queue shape, no audit-log schema changes.
+
+---
+
+## Further reading
+
+- [Cloudflare Workers: Handling webhooks](https://developers.cloudflare.com/workers/examples/signing-requests/)
+- [GitHub: Webhooks documentation](https://docs.github.com/en/developers/webhooks-and-events/webhooks/about-webhooks)
+- [GitHub: Fine-grained PAT scopes](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)
+- [GitHub: Securing your webhooks](https://docs.github.com/en/developers/webhooks-and-events/webhooks/securing-your-webhooks)
+- [GitHub: Issue comment event payload](https://docs.github.com/en/developers/webhooks-and-events/events/github-event-types#issuecommentevent)
 
 ---
 
 ## Take-home extension
 
-The current implementation dispatches every decoded command to `device_id: "broadcast"`.
-For a production deployment, the operator would include a target device ID in the command
-args (e.g. `status drop-alice` encodes the device hostname as the second token). Add
-device-targeting logic to `handleDiscordChatops()`:
+The Discord variant of this lab uses the same EmojiChef encoder and KV job
+queue. Only the transport changes: Ed25519 application key verification instead
+of HMAC-SHA256, and Discord slash command interaction bodies instead of GitHub
+issue comment events.
 
-1. If `commandArgs[0]` matches a `tailscale_hostname` in the `devices` D1 table,
-   set `device_id` to the corresponding `device_id`.
-2. If no match, fall back to `"broadcast"`.
-3. Add a new action `"chatops_target_not_found"` to the audit log when fallback occurs.
-
-This pattern is used in the Lab 14 capstone (the `capture` command targets `drop-&lt;student&gt;`
-specifically). See `take-home/lab11-device-targeting/` for the skeleton.
-
----
-
-## Try it yourself
-
-<EmojiChef client:visible />
+See [`take-home/discord/README.md`](take-home/discord/README.md) for the full
+framing and setup guide.
 
 ---
 

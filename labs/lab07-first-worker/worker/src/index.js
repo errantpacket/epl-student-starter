@@ -33,17 +33,35 @@
 
 // ---------------------------------------------------------------------------
 // EmojiChef Quick Recipe decoder/encoder
-// Source: docs/technical_specifications.md lines 395-480
-// Base: 0x1F345 (🍅), max: 0x1F37F (🍿), 6 bits per emoji.
-// Test vectors:
-//   🍗🍊🍒🍈  → "HSC"
-//   🥘🥫🥩🌯🥙🥘  → "status"
-//   🍱🥤🥩🥓🥨🥯🌯  → "reboot"
+// Source: docs/technical_specifications.md
+// Base: 0x1F345 (🍅), max: 0x1F384 (🎄), 6 bits per emoji.
+//
+// The codepoint range covers exactly 64 emoji (offsets 0..63), one for
+// every possible 6-bit chunk value. This makes encode/decode total
+// over the 6-bit alphabet: any byte sequence produces only in-range
+// emoji on encode, and the decoder accepts any combination without
+// throwing. The range extends past the food block at U+1F37F (popcorn)
+// into the celebration block at U+1F380..U+1F384 (🎀 ribbon, 🎁 wrapped
+// gift, 🎂 birthday cake, 🎃 jack-o-lantern, 🎄 christmas tree).
+//
+// Round-trip is lossless for any ASCII string. encode() pads the input
+// to the next multiple of 3 bytes with NUL (0x00) so the bit count is
+// divisible by both 8 (byte boundary) and 6 (emoji boundary); decode()
+// strips trailing NUL pad bytes. Length-mod-3 inputs need no padding
+// and produce byte-identical encodings to the pre-padding implementation.
+//
+// Test vectors (verified 2026-05-06; full set in
+// labs/lab11-chatops-emojichef/test-vectors.txt):
+//   🍗🍊🍒🍈                  → "HSC"     (3 ch, 4 emoji, no pad)
+//   🍡🍼🍖🍦🍢🍌🍚🍸          → "status"  (6 ch, 8 emoji, no pad)
+//   🍡🍫🍚🍧🍠🍻🎂🍹          → "reboot"  (6 ch, 8 emoji, no pad; uses extended-range 🎂)
+//   🍝🍻🍊🍵🍢🍌🍚🍷🍞🍕🍅🍅  → "capture" (7 ch, 12 emoji, 2 NUL pad)
+//   🍠🍋🍪🍸🍢🍅🍅🍅          → "list"    (4 ch, 8 emoji, 2 NUL pad)
 // ---------------------------------------------------------------------------
 class EmojiChefQuick {
     constructor() {
-        this.base = 0x1F345;   // 🍅
-        this.maxEmoji = 0x1F37F; // 🍿
+        this.base = 0x1F345;     // 🍅
+        this.maxEmoji = 0x1F384; // 🎄 (extended past 🍿 to cover 6-bit values 0..63)
         this.bitsPerEmoji = 6;
     }
 
@@ -70,7 +88,9 @@ class EmojiChefQuick {
         for (let i = 0; i + 8 <= binaryString.length; i += 8) {
             result.push(String.fromCharCode(parseInt(binaryString.substr(i, 8), 2)));
         }
-        return result.join('');
+        // Strip trailing NUL pad bytes added by encode() to make the
+        // input length a multiple of 3.
+        return result.join('').replace(/\0+$/, '');
     }
 
     encode(text) {
@@ -78,7 +98,12 @@ class EmojiChefQuick {
             throw new Error('EmojiChef: invalid input — expected a non-empty string');
         }
 
-        const binaryString = [...text]
+        // Pad to the next multiple of 3 bytes with NUL so the bit count
+        // is divisible by both 8 (byte boundary) and 6 (emoji boundary).
+        const padLen = (3 - (text.length % 3)) % 3;
+        const padded = text + '\0'.repeat(padLen);
+
+        const binaryString = [...padded]
             .map(c => c.charCodeAt(0).toString(2).padStart(8, '0'))
             .join('');
 
@@ -164,6 +189,14 @@ async function handleRequest(url, request, env) {
     if (pathname.startsWith('/v1/jobs/')) {
         return handleJobStatus(pathname, request, env);
     }
+    // Two-step upload (Worker-proxy mode):
+    //   - POST /v1/artifacts/upload     → handleArtifactUpload (mints id + url)
+    //   - PUT  /v1/artifacts/<id>/data  → handleArtifactPut    (stores bytes)
+    //   - GET  /v1/artifacts/<id>       → handleArtifactGet    (returns metadata + url)
+    //   - GET  /v1/artifacts/<id>/data  → handleArtifactGet    (streams bytes)
+    if (pathname.startsWith('/v1/artifacts/') && pathname.endsWith('/data') && request.method === 'PUT') {
+        return handleArtifactPut(pathname, request, env);
+    }
     if (pathname.startsWith('/v1/artifacts/')) {
         return handleArtifactGet(pathname, request, env);
     }
@@ -197,11 +230,20 @@ async function handleEnroll(request, env) {
         return new Response('Method Not Allowed', { status: 405 });
     }
 
-    const clientId = request.headers.get('CF-Access-Client-Id');
-    const clientSecret = request.headers.get('CF-Access-Client-Secret');
+    // CF Access strips the raw CF-Access-Client-Id / CF-Access-Client-Secret
+    // headers after validating the service token; what reaches the Worker is
+    // the Cf-Access-Jwt-Assertion header (signed by CF Access) and an
+    // Cf-Access-Authenticated-User-Email header for browser-flow operators.
+    // Presence of either is sufficient evidence that CF Access let the
+    // request through.  Lab 14 / Lab 11 handlers use the same pattern.
+    const accessJwt = request.headers.get('Cf-Access-Jwt-Assertion');
+    const accessEmail = request.headers.get('Cf-Access-Authenticated-User-Email');
 
-    if (!clientId || !clientSecret) {
-        return Response.json({ error: 'Missing CF Access service token headers' }, { status: 401 });
+    if (!accessJwt && !accessEmail) {
+        return Response.json(
+            { error: 'Missing CF Access JWT — request did not authenticate via CF Access' },
+            { status: 401 }
+        );
     }
 
     let body;
@@ -244,9 +286,13 @@ async function handleEnroll(request, env) {
             JSON.stringify(metadata)
         ).run();
 
-        // Audit
+        // Audit. After the CF-Access-Client-Id refactor we identify the caller
+        // by the Access email (operator browser flow) or the JWT subject
+        // (service-token flow); log whichever the request actually carries.
+        const operatorId = accessEmail
+            || (accessJwt ? `jwt:${accessJwt.slice(0, 16)}...` : 'unknown');
         await logAudit(env, {
-            operator_id: clientId,
+            operator_id: operatorId,
             device_id,
             action: 'enroll',
             details: { device_type, tailscale_hostname, tag },
@@ -386,14 +432,30 @@ async function handleJobStatus(pathname, request, env) {
 
 // ---------------------------------------------------------------------------
 // /v1/artifacts/upload — IMPLEMENTED (Lab 10)
-// POST — mint a time-limited signed PUT URL for uploading an artifact to R2.
-// Body: { artifact_id?, content_type? }
-// Returns: { artifact_id, upload_url, expires_in }
 //
-// Note: R2.createMultipartUpload / presigned URL support uses the R2 binding's
-// createPresignedUrl() method introduced in the R2 public beta.  The signed URL
-// is a short-lived (15-minute) PUT that the caller (Mango, devcontainer) uses
-// directly against the R2 HTTP API — the Worker acts as the URL mint only.
+// In-class path (Worker-proxy mode):
+//   - Two-step: client first POSTs metadata-only to mint an artifact_id +
+//     upload_url that points back at the Worker.  Client then PUTs the bytes
+//     to upload_url.  Worker streams the body straight into R2.
+//   - The body PUT is auth-gated by the same CF Access policy as the rest of
+//     /v1/* (no separate signature scheme to manage).
+//
+// Why not signed URLs against R2 directly?
+//   - The R2 binding does not expose `createPresignedUrl()` despite older
+//     workshop code claiming it does.  Real signed URLs require AWS S3v4
+//     against R2's S3-compatible endpoint with an R2 access-key + secret as
+//     Worker secrets — that is per-deploy dashboard work that the in-class
+//     path avoids.  See the take-home variant in `instructor/dns_delegation_setup_guide.md`-
+//     style notes for the SigV4 + aws4fetch implementation.
+//
+// Body for POST /v1/artifacts/upload (metadata only; no bytes):
+//   { artifact_id?: string, content_type?: string }
+//
+// Returns:
+//   { artifact_id, upload_url: "https://api.<host>/v1/artifacts/<id>/data",
+//     expires_in, content_type }
+//
+// PUT /v1/artifacts/<id>/data accepts the bytes and writes them to R2.
 // ---------------------------------------------------------------------------
 async function handleArtifactUpload(request, env) {
     if (request.method !== 'POST') {
@@ -407,64 +469,96 @@ async function handleArtifactUpload(request, env) {
 
     const artifactId = body.artifact_id || crypto.randomUUID();
     const contentType = body.content_type || 'application/octet-stream';
-    const expiresIn = 900; // 15 minutes
+    const expiresIn = 900; // 15 minutes — informational; the upload endpoint is auth-gated, not URL-signed
+
+    // Build the upload URL by reflecting the request's own host.  This way the
+    // worker doesn't need to know its public hostname (which differs per slot).
+    const url = new URL(request.url);
+    const uploadUrl = `${url.protocol}//${url.host}/v1/artifacts/${artifactId}/data`;
+
+    return Response.json({
+        artifact_id: artifactId,
+        upload_url: uploadUrl,
+        expires_in: expiresIn,
+        content_type: contentType,
+    });
+}
+
+// PUT /v1/artifacts/<id>/data — the second step of the upload flow.  Streams
+// the body into R2 under the artifact_id key.
+async function handleArtifactPut(pathname, request, env) {
+    if (request.method !== 'PUT') {
+        return new Response('Method Not Allowed', { status: 405 });
+    }
+
+    const artifactId = pathname.replace(/^\/v1\/artifacts\//, '').replace(/\/data$/, '');
+    if (!artifactId) {
+        return Response.json({ error: 'Missing artifact ID in path' }, { status: 400 });
+    }
+
+    const contentType = request.headers.get('Content-Type') || 'application/octet-stream';
 
     try {
-        // R2 presigned URL for PUT
-        const uploadUrl = await env.ARTIFACTS.createPresignedUrl(
-            artifactId,
-            'PUT',
-            {
-                expiresIn,
-                httpMetadata: { contentType },
-            }
-        );
-
-        return Response.json({
-            artifact_id: artifactId,
-            upload_url: uploadUrl,
-            expires_in: expiresIn,
-            content_type: contentType,
+        await env.ARTIFACTS.put(artifactId, request.body, {
+            httpMetadata: { contentType },
         });
+        return Response.json({ artifact_id: artifactId, stored: true });
     } catch (err) {
-        console.error('handleArtifactUpload error:', err);
-        return Response.json({ error: 'Failed to mint upload URL', detail: err.message }, { status: 500 });
+        console.error('handleArtifactPut error:', err);
+        return Response.json({ error: 'R2 put failed', detail: err.message }, { status: 500 });
     }
 }
 
 // ---------------------------------------------------------------------------
 // /v1/artifacts/<artifact_id> — IMPLEMENTED (Lab 10)
-// GET — mint a signed GET URL for an R2 object and return it in JSON.
-// Returns: { artifact_id, download_url, expires_in }
 //
-// The caller follows the download_url directly to retrieve the object from R2.
-// Lab 14 (capstone) uses this to deliver pcap files via Discord.
+// In-class path (Worker-proxy mode):
+//   GET returns metadata + a download_url that points back at the Worker's
+//   own /data sub-path.  Following the download_url streams the R2 bytes
+//   through the Worker.  Auth-gated by CF Access (same as upload).
+//
+// Returns:
+//   { artifact_id, download_url, expires_in, size, content_type }
+//
+// Lab 14 (capstone) takes this download_url and posts it back via the
+// configured ChatOps channel.
 // ---------------------------------------------------------------------------
 async function handleArtifactGet(pathname, request, env) {
     if (request.method !== 'GET') {
         return new Response('Method Not Allowed', { status: 405 });
     }
 
-    // Strip /v1/artifacts/ prefix; allow nested paths (e.g. captures/foo.pcap)
     const artifactId = pathname.replace(/^\/v1\/artifacts\//, '');
     if (!artifactId) {
         return Response.json({ error: 'Missing artifact ID in path' }, { status: 400 });
     }
 
-    const expiresIn = 3600; // 1 hour — long enough for the Discord reply to be useful
+    // /v1/artifacts/<id>/data — stream the bytes back directly.
+    if (artifactId.endsWith('/data')) {
+        const realId = artifactId.replace(/\/data$/, '');
+        const obj = await env.ARTIFACTS.get(realId);
+        if (!obj) {
+            return Response.json({ error: 'Artifact not found' }, { status: 404 });
+        }
+        return new Response(obj.body, {
+            headers: {
+                'Content-Type': obj.httpMetadata?.contentType || 'application/octet-stream',
+                'Content-Length': String(obj.size),
+            },
+        });
+    }
+
+    // /v1/artifacts/<id> — return metadata + a download_url that points at /data.
+    const expiresIn = 3600; // 1 hour — informational; gating is via CF Access, not URL signature
 
     try {
-        // Verify the object exists before minting a URL
         const head = await env.ARTIFACTS.head(artifactId);
         if (!head) {
             return Response.json({ error: 'Artifact not found' }, { status: 404 });
         }
 
-        const downloadUrl = await env.ARTIFACTS.createPresignedUrl(
-            artifactId,
-            'GET',
-            { expiresIn }
-        );
+        const url = new URL(request.url);
+        const downloadUrl = `${url.protocol}//${url.host}/v1/artifacts/${artifactId}/data`;
 
         return Response.json({
             artifact_id: artifactId,
@@ -475,7 +569,7 @@ async function handleArtifactGet(pathname, request, env) {
         });
     } catch (err) {
         console.error('handleArtifactGet error:', err);
-        return Response.json({ error: 'Failed to mint download URL', detail: err.message }, { status: 500 });
+        return Response.json({ error: 'Failed to fetch artifact metadata', detail: err.message }, { status: 500 });
     }
 }
 

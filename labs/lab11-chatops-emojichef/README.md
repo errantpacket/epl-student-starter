@@ -11,7 +11,7 @@ quasi-base64 alphabet.
 
 In this lab you configure a Discord webhook that fires at your Worker, implement the
 signature verification and decoder in the Worker, and wire the decoded command into the
-KV job queue from Lab 10. When it works, typing "🥘🥫🥩🌯🥙🥘" in Discord silently
+KV job queue from Lab 10. When it works, typing "🍡🍼🍖🍦🍢🍌🍚🍸" in Discord silently
 enqueues a `status` job for a device — and an entry appears in the D1 audit log.
 
 ---
@@ -67,8 +67,8 @@ Known test vectors (see also `test-vectors.txt`):
 | Plaintext | Encoded |
 |-----------|---------|
 | `HSC`     | 🍗🍊🍒🍈   |
-| `status`  | 🥘🥫🥩🌯🥙🥘 |
-| `reboot`  | 🍱🥤🥩🥓🥨🥯🌯 |
+| `status`  | 🍡🍼🍖🍦🍢🍌🍚🍸 |
+| `reboot`  | 🍡🍫🍚🍧🍠🍻🎂🍹 |
 
 Verify the vectors yourself using Node:
 
@@ -88,8 +88,8 @@ Expected output:
 
 ```
 HSC -> 🍗🍊🍒🍈 -> decoded: HSC
-status -> 🥘🥫🥩🌯🥙🥘 -> decoded: status
-reboot -> 🍱🥤🥩🥓🥨🥯🌯 -> decoded: reboot
+status -> 🍡🍼🍖🍦🍢🍌🍚🍸 -> decoded: status
+reboot -> 🍡🍫🍚🍧🍠🍻🎂🍹 -> decoded: reboot
 ```
 
 ### 2. Review the Worker chatops endpoint
@@ -222,7 +222,7 @@ The command is now available in your server as `/cmd <emoji-string>`.
 In your Discord server, type:
 
 ```
-/cmd 🥘🥫🥩🌯🥙🥘
+/cmd 🍡🍼🍖🍦🍢🍌🍚🍸
 ```
 
 This should dispatch a `status` job. Verify in the Worker:
@@ -261,8 +261,8 @@ Test all three known vectors:
 
 ```
 /cmd 🍗🍊🍒🍈       → decodes to "HSC"
-/cmd 🥘🥫🥩🌯🥙🥘   → decodes to "status"
-/cmd 🍱🥤🥩🥓🥨🥯🌯 → decodes to "reboot"
+/cmd 🍡🍼🍖🍦🍢🍌🍚🍸   → decodes to "status"
+/cmd 🍡🍫🍚🍧🍠🍻🎂🍹 → decodes to "reboot"
 ```
 
 ### 9. Test without Discord (direct HTTP)
@@ -279,7 +279,7 @@ curl -s \
     -H "Content-Type: application/json" \
     -H "X-Signature-Ed25519: deadbeef" \
     -H "X-Signature-Timestamp: $(date +%s)" \
-    -d '{"content": "🥘🥫🥩🌯🥙🥘"}' | jq .
+    -d '{"content": "🍡🍼🍖🍦🍢🍌🍚🍸"}' | jq .
 ```
 
 With `DISCORD_PUBLIC_KEY` set, this returns 401. Use the validate.sh script (step 10)
@@ -308,7 +308,7 @@ When this lab is complete:
 - [ ] Discord application exists with the Interactions Endpoint URL set.
 - [ ] `DISCORD_PUBLIC_KEY` is set as a Worker secret.
 - [ ] `/v1/chatops/discord` responds to the Discord PING with `{ type: 1 }`.
-- [ ] Posting `🥘🥫🥩🌯🥙🥘` via Discord or curl dispatches a `status` job.
+- [ ] Posting `🍡🍼🍖🍦🍢🍌🍚🍸` via Discord or curl dispatches a `status` job.
 - [ ] The job appears in KV (readable via `/v1/jobs/<id>`).
 - [ ] An `audit_log` row with action `"chatops_dispatch"` exists in D1.
 

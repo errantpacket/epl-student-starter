@@ -1,6 +1,6 @@
-# Lab 14 Capstone — Dispatch Flow
+# Lab 14 capstone — dispatch flow
 
-Sequence diagram for the full round-trip from Discord emoji to signed pcap URL.
+Sequence diagram for the full round-trip from GitHub issue comment to signed pcap URL.
 Use this during the instructor narration of the capstone demo.
 
 ---
@@ -8,14 +8,19 @@ Use this during the instructor narration of the capstone demo.
 ## ASCII sequence diagram
 
 ```
-Operator          Discord         Worker (CF edge)     KV / D1 / R2      Mango (tailnet)
+Operator        GitHub issue      Worker (CF edge)     KV / D1 / R2      Mango (tailnet)
    |                 |                  |                    |                  |
-   |  type emoji     |                  |                    |                  |
+   |  comment emoji  |                  |                    |                  |
+   |  @alpha 🍡🍼🍖  |                  |                    |                  |
    |---------------->|                  |                    |                  |
    |                 |  POST webhook    |                    |                  |
+   |                 |  X-Hub-Signature |                    |                  |
+   |                 |  issue_comment   |                    |                  |
    |                 |----------------->|                    |                  |
-   |                 |                  |  verify Ed25519    |                  |
-   |                 |                  |  sig               |                  |
+   |                 |                  |  verify HMAC-SHA256|                  |
+   |                 |                  |  allow-list check  |                  |
+   |                 |                  |  prefix gate       |                  |
+   |                 |                  |  (@alpha present)  |                  |
    |                 |                  |  EmojiChef.decode()|                  |
    |                 |                  |  --> "capture 30"  |                  |
    |                 |                  |                    |                  |
@@ -26,16 +31,16 @@ Operator          Discord         Worker (CF edge)     KV / D1 / R2      Mango (
    |                 |                  |  status=queued     |                  |
    |                 |                  |------------------->|                  |
    |                 |                  |                    |                  |
-   |                 |  200 {job_id}    |                    |                  |
+   |                 |  200             |                    |                  |
    |                 |<-----------------|                    |                  |
    |                 |                  |                    |                  |
    |  GET /v1/jobs/<id>                 |                    |                  |
    |------------------------------------>                    |                  |
-   |  {status:queued}                   |                    |                  |
+   |  {status: queued}                  |                    |                  |
    |<------------------------------------                    |                  |
    |                                                         |                  |
    |  ** OPERATOR BRIDGE STEP **                             |                  |
-   |  tailscale ssh root@drop-<student> 'sh run-capture.sh' |                  |
+   |  tailscale ssh root@drop-<slot> 'sh run-capture.sh ...'|                  |
    |-------------------------------------------------------->|                  |
    |                 |                  |                    |  tcpdump-mini    |
    |                 |                  |                    |  -G 30 -W 1      |
@@ -67,11 +72,12 @@ Operator          Discord         Worker (CF edge)     KV / D1 / R2      Mango (
    |                 |                  |  INSERT audit_log  |                  |
    |                 |                  |  exec_finished     |                  |
    |                 |                  |------------------->|                  |
-   |                 |                  |  POST Discord      |                  |
-   |                 |                  |  webhook           |                  |
-   |                 |<-----------------|                    |                  |
-   |  "Capture done, |                  |                    |                  |
-   |   download: URL"|                  |                    |                  |
+   |                 |                  |                    |                  |
+   |   run-capture.sh posts result comment                   |                  |
+   |   POST github.com/repos/.../issues/1/comments           |                  |
+   |                 |<-----------------------------------------                |
+   |  [eplabs:result] @alpha capture complete                |                  |
+   |  download: <signed-url>           |                    |                  |
    |                 |                  |                    |                  |
    |  GET <signed-url> (direct to R2, no Worker)            |                  |
    |------------------------------------------------------> R2                 |
@@ -86,23 +92,23 @@ Operator          Discord         Worker (CF edge)     KV / D1 / R2      Mango (
 ```mermaid
 sequenceDiagram
     actor Operator
-    participant Discord
+    participant Issue as Operator's GitHub<br/>repo issue
     participant Worker as Worker<br/>(CF edge)
     participant Store as KV / D1 / R2
     participant Mango as Mango<br/>(tailnet)
 
-    Operator->>Discord: type emoji "capture 30"
-    Discord->>Worker: POST /v1/chatops/discord
-    Worker->>Worker: verify Ed25519 sig<br/>EmojiChef.decode() → "capture 30"
+    Operator->>Issue: comment "@alpha 🍡🍼🍖🍦🍢🍌🍚🍸"
+    Issue->>Worker: POST /v1/chatops/github<br/>X-Hub-Signature-256: <hmac>
+    Worker->>Worker: verify HMAC-SHA256<br/>allow-list + prefix gate<br/>EmojiChef.decode() → "status"
     Worker->>Store: INSERT audit_log (chatops_dispatch)
     Worker->>Store: KV PUT job:uuid (status=queued)
-    Worker-->>Discord: 200 {job_id}
+    Worker-->>Issue: 200
 
     Operator->>Worker: GET /v1/jobs/uuid
     Worker-->>Operator: {status: "queued"}
 
     Note over Operator,Mango: OPERATOR BRIDGE (Workers cannot<br/>initiate tailnet connections)
-    Operator->>Mango: tailscale ssh root@drop-student<br/>'sh run-capture.sh uuid 30'
+    Operator->>Mango: tailscale ssh root@drop-alpha<br/>'sh run-capture.sh uuid 30 ...'
     activate Mango
     Mango->>Mango: tcpdump-mini -G 30 -W 1 -w /tmp/uuid.pcap
     Mango->>Worker: POST /v1/artifacts/upload
@@ -115,8 +121,9 @@ sequenceDiagram
     Worker->>Store: KV PUT job:uuid (status=complete, artifact_id)
     Worker->>Store: INSERT audit_log (exec_finished)
     Worker->>Store: R2 presign GET URL (1h TTL)
-    Worker->>Discord: POST webhook (download URL)
-    Discord-->>Operator: "Capture done, download: <URL>"
+
+    Mango->>Issue: POST /repos/.../issues/1/comments<br/>[eplabs:result] @alpha capture complete\ndownload: <url>
+    Issue-->>Operator: result comment visible on issue
 
     Operator->>Store: GET <signed URL> (direct to R2)
     Store-->>Operator: 200 application/vnd.tcpdump.pcap
@@ -138,7 +145,7 @@ sequenceDiagram
 3. **Tailscale for command dispatch; Worker (public internet) for data exfil.** The Mango
    receives its command over the tailnet (private, encrypted, access-controlled). It
    uploads the pcap to R2 via the public Worker URL (because the Mango cannot initiate
-   outbound tailnet connections to the Worker — it uses CF Access service token auth
+   outbound tailnet connections to the Worker; it uses CF Access service token auth
    instead). These are two separate security planes that the architecture keeps distinct.
 
 4. **Signed URLs scope the artifact access.** The operator gets a time-limited signed URL,
@@ -146,6 +153,10 @@ sequenceDiagram
    the bucket. This mirrors real exfil scenarios where you want the collection window to
    close automatically.
 
-5. **D1 audit_log is tamper-evident.** Every action — decode, dispatch, exec, upload,
-   deliver — is written to D1 with a timestamp and the acting entity. An instructor can
+5. **D1 audit_log is tamper-evident.** Every action (decode, dispatch, exec, upload,
+   deliver) is written to D1 with a timestamp and the acting entity. An instructor can
    reconstruct the full engagement timeline from audit_log alone.
+
+6. **Loop protection via `[eplabs:result]` sentinel.** The Worker's issue_comment handler
+   skips any comment whose body begins with `[eplabs:result]` or whose author is a Bot
+   account. This prevents the result comment from re-triggering the pipeline.

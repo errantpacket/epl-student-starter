@@ -67,7 +67,7 @@ VALID_BODY=$(curl -sf \
 if printf '%s' "$VALID_BODY" | grep -q 'NetOps Platform'; then
     die "Valid-profile request returned decoy HTML instead of proxied response.
   Check:
-    1. KV relay_profile is uploaded (wrangler kv:key get --binding RATE_LIMITS relay_profile)
+    1. KV relay_profile is uploaded (wrangler kv key get --binding RATE_LIMITS --remote relay_profile)
     2. PROFILE_UA contains the user_agent_pattern substring
     3. PROFILE_HEADER_NAME/VALUE match required_header in the profile
     4. RELAY_TEST_PATH is in the allowed_paths list
@@ -107,7 +107,7 @@ rm -f /tmp/lab13-decoy.body
 if ! printf '%s' "$DECOY_BODY" | grep -q 'NetOps Platform'; then
     die "Invalid-profile response body does not contain expected decoy content ('NetOps Platform').
   Check that relay_decoy_html KV key is populated:
-    wrangler kv:key get --binding RATE_LIMITS relay_decoy_html"
+    wrangler kv key get --binding RATE_LIMITS --remote relay_decoy_html"
 fi
 pass "decoy response body contains expected content"
 
@@ -127,6 +127,7 @@ fi
 printf '\n[3] Checking D1 audit_log for relay_decision entries...\n'
 
 AUDIT_RESULT=$(wrangler d1 execute fleet-database \
+    --remote \
     --command "SELECT action, details FROM audit_log WHERE action='relay_decision' ORDER BY created_at DESC LIMIT 2" \
     --json 2>/dev/null) || \
     die "wrangler d1 execute failed. Check that:

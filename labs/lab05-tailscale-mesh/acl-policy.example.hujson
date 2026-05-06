@@ -21,7 +21,10 @@
 //   device     → (nothing)    (drops do not initiate to operators or peers)
 //
 // MagicDNS: must be enabled on the tailnet for short-name resolution to work
-// (tailscale ping drop-alpha instead of tailscale ping 100.x.x.y).
+// (tailscale ping drop-alpha instead of tailscale ping 100.x.x.y). MagicDNS
+// and the upstream nameservers are admin-console settings, not ACL fields:
+// configure both at https://login.tailscale.com/admin/dns. Tailscale's ACL
+// endpoint rejects a top-level `dns` block in this file with HTTP 400.
 //
 // SSH: Tailscale SSH is enabled for operator→device access. The device responds
 // to SSH sessions opened by the operator but does not open outbound SSH itself.
@@ -66,13 +69,11 @@
       "dst":    ["tag:device"],
       "users":  ["root", "autogroup:nonroot"]
     }
-  ],
+  ]
 
-  // MagicDNS — required for short-name resolution (drop-alpha, ep-alpha, etc.)
-  // Enable in Tailscale admin console: DNS > Enable MagicDNS
-  // The nameservers below are Cloudflare's resolvers for non-tailnet queries.
-  "dns": {
-    "nameservers": ["1.1.1.1", "1.0.0.1"],
-    "magic":       true
-  }
+  // MagicDNS and split-DNS settings are NOT in this file; configure them
+  // at https://login.tailscale.com/admin/dns. Enable MagicDNS there
+  // before relying on short-name resolution (drop-alpha, ep-alpha, ...).
+  // Cloudflare resolvers (1.1.1.1, 1.0.0.1) are a reasonable upstream
+  // pick in the same admin pane.
 }

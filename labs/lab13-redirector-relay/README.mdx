@@ -1,44 +1,73 @@
 ---
-title: "Redirector / Edge Relay"
+title: "Redirector and edge relay"
 labNumber: 13
 duration: "60 minutes"
 day: "Day 2, Session 6"
 hardwareRequired: false
-widgets: ["MarkCompleteButton", "ValidateOutputPaster", "ViewSource"]
+codespaces: "supported"
+widgets: ["EnvironmentToggle", "LabProgress", "LabStep", "EnvBlock", "ValidateOutputPaster", "MarkCompleteButton", "ViewSource"]
 ---
 
-import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
+import EnvironmentToggle from '@widgets/EnvironmentToggle.svelte';
+import LabProgress from '@widgets/LabProgress.svelte';
+import LabStep from '@widgets/LabStep.astro';
+import EnvBlock from '@widgets/EnvBlock.astro';
 import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
+import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
 import ViewSource from '@widgets/ViewSource.svelte';
 
-> **Self-referential hook:** The `/relay/*` route on the production version of this site's Worker demonstrates the malleable-profile pattern you are about to implement. The Worker serving these pages validates the same kind of header-and-path allowlist before forwarding requests. Inspect the production Worker's source via the "View this page's source" link in the sidebar to see the profile match logic alongside a real deployment.
+<EnvironmentToggle client:load />
 
-# Lab 13 — Redirector / Edge Relay
+<LabProgress lab="lab13" client:load steps={[
+  { id: 'kv-profile',  label: '1. Upload the malleable profile to KV' },
+  { id: 'kv-decoy',    label: '2. Upload the decoy HTML to KV' },
+  { id: 'deploy',      label: '3. Deploy the updated Worker' },
+  { id: 'decoy-test',  label: '4. Test the decoy response (invalid profile)' },
+  { id: 'relay-test',  label: '5. Test the relay response (valid profile)' },
+  { id: 'audit',       label: '6. Verify D1 audit log entries' },
+  { id: 'match-logic', label: '7. Understand the profile match logic' },
+  { id: 'validate',    label: 'Run validation' },
+]} />
+
+# Lab 13 — Redirector and edge relay
 
 **Duration: 60 minutes**
-**Day:** 2, Session 5
 
-A C2 redirector sits between the internet and your implant infrastructure. It forwards
-traffic that matches a known "malleable C2 profile" — a specific User-Agent, path, and
-header pattern — and returns an innocuous decoy page to everything else. This pattern,
-popularized by frameworks like Cobalt Strike and implemented in production tools like
-Oblique-Relay (`github.com/errantpacket/Oblique-Relay`), means a blue-team analyst who
-notices your Worker's hostname sees only a benign website, not a C2.
+> **Self-referential hook.** The `/relay/*` route on the production
+> version of this site's Worker demonstrates the malleable-profile
+> pattern you are about to implement. The Worker serving these pages
+> validates the same kind of header-and-path allowlist before forwarding
+> requests. Inspect the production Worker's source via the "View this
+> page's source" link in the sidebar to see the profile match logic
+> alongside a real deployment.
 
-In this lab you add a `/relay/*` route to the same Worker you have been building since Lab 07.
-Valid relay traffic is proxied to your devcontainer (via a second cloudflared ingress rule).
-Invalid traffic gets a plausible decoy HTML page. All decisions are logged to D1 `audit_log`.
+A C2 redirector sits between the internet and your implant
+infrastructure. It forwards traffic that matches a known "malleable C2
+profile" (a specific User-Agent, path, and header pattern) and returns
+an innocuous decoy page to everything else. This pattern, popularized
+by frameworks like Cobalt Strike and implemented in production tools
+like Oblique-Relay (`github.com/errantpacket/Oblique-Relay`), means a
+blue-team analyst who notices your Worker's hostname sees only a benign
+website, not a C2.
+
+In this lab you add a `/relay/*` route to the same Worker you have been
+building since Lab 07. Valid relay traffic is proxied to your operator
+console (via a second cloudflared ingress rule). Invalid traffic gets a
+plausible decoy HTML page. All decisions are logged to D1 `audit_log`.
 
 ---
 
 ## Learning objectives
 
-- Understand the malleable C2 profile pattern: UA + header + path whitelist.
-- Implement profile validation in a Cloudflare Worker with zero external dependencies.
-- Distinguish between profile-valid proxying and decoy-response serving.
+- Understand the malleable C2 profile pattern: UA + header + path
+  whitelist.
+- Implement profile validation in a Cloudflare Worker with zero
+  external dependencies.
+- Distinguish between profile-valid proxying and decoy-response
+  serving.
 - Log relay decisions (with request fingerprints) to D1 for audit.
-- Configure a second cloudflared ingress rule to route the relay backend independently
-  from the `/v1/*` Worker API.
+- Configure a second cloudflared ingress rule to route the relay
+  backend independently from the `/v1/*` Worker API.
 
 ---
 
@@ -46,59 +75,81 @@ Invalid traffic gets a plausible decoy HTML page. All decisions are logged to D1
 
 ```sh
 # Worker is deployed and /v1/health returns 200 (Lab 09+ complete)
-curl -sf https://api.&#36;\{DOMAIN\}/v1/health | grep '"ok":true' && echo "worker ok"
+curl -sf https://api.${DOMAIN}/v1/health | grep '"ok":true' && echo "worker ok"
 
 # D1 audit_log table exists (Lab 09)
 wrangler d1 execute fleet-database \
     --command "SELECT name FROM sqlite_master WHERE type='table' AND name='audit_log'"
 
-# KV namespace RATE_LIMITS is bound (Lab 10) — relay_profile key lives here
-wrangler kv:key list --binding RATE_LIMITS | head -5
+# KV namespace RATE_LIMITS is bound (Lab 10). The relay_profile key lives here.
+wrangler kv key list --binding RATE_LIMITS --remote | head -5
 
-# devcontainer is running nginx on port 8080 (or any port — configure below)
-curl -sf http://localhost:8080/ | head -3 || echo "start nginx in devcontainer first"
+# Operator console is running nginx on port 8080 (or any port; configure below)
+curl -sf http://localhost:8080/ | head -3 || echo "start nginx in the operator console first"
 
 # DOMAIN is set
-echo "DOMAIN=&#36;\{DOMAIN\}"
-echo "STUDENT=&#36;\{STUDENT\}"
+echo "DOMAIN=${DOMAIN}"
+echo "STUDENT=${STUDENT}"
 ```
+
+<EnvBlock env="codespace">
+
+> **Codespace users.** The relay backend runs on
+> `localhost:8080` of the operator console; in a Codespace this is the
+> Codespace itself. The second cloudflared ingress rule (added below)
+> targets `http://localhost:8080`, which works because cloudflared is
+> running in the same Codespace.
+
+</EnvBlock>
+
+<EnvBlock env="local-dev,minimal-local">
+
+> **Local Dev / Minimal local.** Same shape: cloudflared and nginx both
+> run in the operator console. The second ingress targets the local
+> nginx at `localhost:8080`.
+
+</EnvBlock>
 
 ---
 
 ## Architecture: how the relay backend works
 
-The Worker runs on Cloudflare's edge — it cannot initiate Tailscale connections (Workers
-are stateless edge functions with no persistent network state). The relay backend must
-therefore be reachable from the Cloudflare edge via a public URL.
+The Worker runs on Cloudflare's edge; it cannot initiate Tailscale
+connections (Workers are stateless edge functions with no persistent
+network state). The relay backend must therefore be reachable from the
+Cloudflare edge via a public URL.
 
-The solution uses the **cloudflared tunnel** already established in Lab 06, but with a
-**second ingress rule** on a second hostname:
+The solution uses the **cloudflared tunnel** already established in
+Lab 06, but with a **second ingress rule** on a second hostname:
 
 ```
 Internet request to https://app.<DOMAIN>/...
-    → CF DNS → cloudflared tunnel (same daemon, same tunnel credential)
-        → devcontainer nginx on port 8080
+    -> CF DNS -> cloudflared tunnel (same daemon, same tunnel credential)
+        -> operator console nginx on port 8080
 ```
 
-The Worker's `handleRelay()` function, when a request passes profile validation, calls
-`fetch("https://app.&#36;\{DOMAIN\}" + path)` — hitting the second tunnel hostname, which
-cloudflared routes to the devcontainer origin.
+The Worker's `handleRelay()` function, when a request passes profile
+validation, calls `fetch("https://app.${DOMAIN}" + path)`. That hits
+the second tunnel hostname, which cloudflared routes to the operator
+console origin.
 
-This is architecturally clean: the first hostname (`api.<DOMAIN>`) is fully controlled by
-the Worker route; the second hostname (`app.<DOMAIN>`) bypasses the Worker and is purely
-a tunnel pass-through, protected by CF Access. The relay function acts as a profile-validating
-reverse proxy sitting in front of `app.<DOMAIN>`.
+This is architecturally clean: the first hostname (`api.<DOMAIN>`) is
+fully controlled by the Worker route; the second hostname
+(`app.<DOMAIN>`) bypasses the Worker and is purely a tunnel
+pass-through, protected by CF Access. The relay function acts as a
+profile-validating reverse proxy sitting in front of `app.<DOMAIN>`.
 
 ### Add the second ingress rule
 
-Edit `cloudflared-config.yml` (from Lab 06) to add a second rule **before** the catchall:
+Edit `cloudflared-config.yml` (from Lab 06) to add a second rule
+**before** the catchall:
 
 ```yaml
 ingress:
   - hostname: api.YOUR_DOMAIN
     service: http://localhost:8787
-  - hostname: app.YOUR_DOMAIN       # <-- add this
-    service: http://localhost:8080  # nginx in devcontainer
+  - hostname: app.YOUR_DOMAIN       # add this
+    service: http://localhost:8080  # nginx in the operator console
   - service: http_status:404
 ```
 
@@ -108,34 +159,49 @@ Then add a DNS record for `app.<DOMAIN>` pointing at the same tunnel:
 # In the Cloudflare dashboard: DNS > Add record
 # Type: CNAME, Name: app, Target: <tunnel-id>.cfargotunnel.com
 
-# Or via wrangler CLI (if your account has the tunnel ID):
-# (Use the dashboard — it's two clicks and avoids token scope issues)
+# Or via wrangler / cloudflared:
+cloudflared tunnel route dns <tunnel-name> app.${DOMAIN}
 ```
 
 Restart cloudflared to pick up the new ingress rule:
 
 ```sh
-# In the devcontainer:
+# In the operator console:
 pkill cloudflared
 cloudflared tunnel --config ~/.cloudflared/config.yml run &
 sleep 3
-curl -sf https://app.&#36;\{DOMAIN\}/ | head -3 && echo "backend reachable"
+curl -sf https://app.${DOMAIN}/ | head -3 && echo "backend reachable"
 ```
 
 Record the backend URL:
 
 ```sh
-export RELAY_BACKEND="https://app.&#36;\{DOMAIN\}"
+export RELAY_BACKEND="https://app.${DOMAIN}"
 ```
+
+---
+
+## Where each step runs
+
+All steps run in the operator console. The `app.<DOMAIN>` cloudflared
+ingress runs in the same operator console as the API tunnel from
+Lab 06.
+
+| Step | Operator console |
+|------|:----------------:|
+| Architecture: second ingress rule | yes |
+| 1–7. All walkthrough steps | yes |
+| Validation | yes |
 
 ---
 
 ## Walkthrough
 
-### 1. Upload the malleable profile to KV
+<LabStep lab="lab13" id="kv-profile" num={1} title="Upload the malleable profile to KV">
 
-The relay profile is stored in KV under the key `relay_profile`. It defines which
-User-Agent, path prefix, and header must be present for a request to be forwarded.
+The relay profile is stored in KV under the key `relay_profile`. It
+defines which User-Agent, path prefix, and header must be present for a
+request to be forwarded.
 
 Review `labs/lab13-redirector-relay/profile.example.json`:
 
@@ -148,8 +214,9 @@ cat courses/engagement-platform-labs/labs/lab13-redirector-relay/profile.example
 Upload it to KV:
 
 ```sh
-wrangler kv:key put \
+wrangler kv key put \
     --binding RATE_LIMITS \
+    --remote \
     --path courses/engagement-platform-labs/labs/lab13-redirector-relay/profile.example.json \
     relay_profile
 ```
@@ -157,27 +224,33 @@ wrangler kv:key put \
 Verify:
 
 ```sh
-wrangler kv:key get --binding RATE_LIMITS relay_profile
+wrangler kv key get --binding RATE_LIMITS --remote relay_profile
 ```
 
-Expected: JSON blob with `user_agent_pattern`, `required_header`, `allowed_paths`, and
-`backend` fields.
+Expected: JSON blob with `user_agent_pattern`, `required_header`,
+`allowed_paths`, and `backend` fields.
 
-### 2. Upload the decoy HTML to KV
+</LabStep>
+
+<LabStep lab="lab13" id="kv-decoy" num={2} title="Upload the decoy HTML to KV">
 
 Store the decoy page content in KV under `relay_decoy_html`:
 
 ```sh
-wrangler kv:key put \
+wrangler kv key put \
     --binding RATE_LIMITS \
+    --remote \
     --path courses/engagement-platform-labs/labs/lab13-redirector-relay/decoy.html \
     relay_decoy_html
 ```
 
-### 3. Deploy the updated Worker
+</LabStep>
 
-The `handleRelay()` function and the `/relay/*` route case have been added to
-`labs/lab07-first-worker/worker/src/index.js` as part of this lab.
+<LabStep lab="lab13" id="deploy" num={3} title="Deploy the updated Worker">
+
+The `handleRelay()` function and the `/relay/*` route case have been
+added to `labs/lab07-first-worker/worker/src/index.js` as part of this
+lab.
 
 Review the changes:
 
@@ -186,84 +259,88 @@ cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
 grep -n 'handleRelay\|relay_profile\|relay_decoy\|/relay/' src/index.js | head -20
 ```
 
+Confirm `wrangler.toml` includes the `/relay/*` route. The Lab 07
+template ships with both routes already populated:
+
+```toml
+routes = [
+    { pattern = "api.YOUR_DOMAIN/v1/*",    zone_name = "YOUR_PARENT_ZONE" },
+    { pattern = "api.YOUR_DOMAIN/relay/*", zone_name = "YOUR_PARENT_ZONE" }
+]
+```
+
+If the second route is missing, add it now and re-substitute the
+placeholders (Lab 07 step 3 covers the sed for both `YOUR_DOMAIN` and
+`YOUR_PARENT_ZONE`).
+
 Deploy:
 
 ```sh
 npx wrangler deploy
 ```
 
-Expected output includes the updated Worker upload size. The `/relay/*` route is handled
-by the same Worker — no new wrangler.toml route entry is needed because the existing
-`api.YOUR_DOMAIN/v1/*` route... wait, `/relay/*` is NOT under `/v1/`. Add the relay route:
+The deploy output should list both `api.<DOMAIN>/v1/*` and
+`api.<DOMAIN>/relay/*` routes.
+
+</LabStep>
+
+<LabStep lab="lab13" id="decoy-test" num={4} title="Test the decoy response (invalid profile)">
+
+No special headers. This simulates a casual browser or scanner:
 
 ```sh
-# In wrangler.toml, add a second route entry:
-# routes = [
-#     { pattern = "api.YOUR_DOMAIN/v1/*", zone_name = "YOUR_DOMAIN" },
-#     { pattern = "api.YOUR_DOMAIN/relay/*", zone_name = "YOUR_DOMAIN" }
-# ]
-sed -i '/pattern = "api\.'&#36;\{DOMAIN\}'\/v1\/\*"/a\    ,\n    { pattern = "api.'&#36;\{DOMAIN\}'/relay/*", zone_name = "'&#36;\{DOMAIN\}'" }' \
-    wrangler.toml
-```
-
-Or edit `wrangler.toml` directly — the routes array should look like:
-
-```toml
-routes = [
-    { pattern = "api.YOUR_DOMAIN/v1/*",    zone_name = "YOUR_DOMAIN" },
-    { pattern = "api.YOUR_DOMAIN/relay/*", zone_name = "YOUR_DOMAIN" }
-]
-```
-
-After editing:
-
-```sh
-npx wrangler deploy
-```
-
-### 4. Test the decoy response (invalid profile)
-
-No special headers — this simulates a casual browser or scanner:
-
-```sh
-curl -sv https://api.&#36;\{DOMAIN\}/relay/update 2>&1 | grep -E 'HTTP|< |<h'
+curl -sv https://api.${DOMAIN}/relay/update 2>&1 | grep -E 'HTTP|< |<h'
 ```
 
 Expected:
+
 - HTTP 200
 - Body contains HTML (the decoy page content from `decoy.html`)
 - No indication of a proxy or backend
 
 ```sh
 # Assert the Content-Type is text/html
-curl -sI https://api.&#36;\{DOMAIN\}/relay/update | grep -i content-type
+curl -sI https://api.${DOMAIN}/relay/update | grep -i content-type
 # Expected: content-type: text/html; charset=utf-8
 ```
 
-### 5. Test the relay response (valid profile)
+</LabStep>
 
-Use the exact User-Agent and header defined in `profile.example.json`:
+<LabStep lab="lab13" id="relay-test" num={5} title="Test the relay response (valid profile)">
+
+Use the exact User-Agent and header defined in
+`profile.example.json`. The header name and value come from
+`required_header` (`X-EPL-Profile: epl-relay-alpha-2024`):
 
 ```sh
 curl -sv \
     -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) EPL-Implant/1.0" \
-    -H "X-EPL-Profile: $(grep required_header_value \
-        courses/engagement-platform-labs/labs/lab13-redirector-relay/profile.example.json \
-        | sed 's/.*: *"//;s/".*//')" \
-    "https://api.&#36;\{DOMAIN\}/relay/update" 2>&1 | head -30
+    -H "X-EPL-Profile: epl-relay-alpha-2024" \
+    "https://api.${DOMAIN}/relay/update" 2>&1 | head -30
 ```
 
-Expected:
-- HTTP 200 (or whatever the devcontainer nginx returns for `/update`)
-- Response body from the devcontainer (nginx default page or custom page)
-- `X-Relay-Backend` response header (the Worker adds this for debug during the workshop)
+If you customised the header value in your KV-uploaded profile,
+substitute that value. `validate.sh` reads `PROFILE_HEADER_VALUE` from
+the environment or defaults to `epl-relay-alpha-2024`.
 
-If the devcontainer is serving the default nginx welcome page, you will see HTML with
+Expected:
+
+- HTTP 200 (or whatever the operator console nginx returns for
+  `/update`)
+- Response body from the operator console (nginx default page or
+  custom page)
+- `X-Relay-Backend` response header (the Worker adds this for debug
+  during the workshop)
+
+If nginx is serving the default welcome page, you will see HTML with
 "Welcome to nginx!" or similar.
 
-### 6. Verify D1 audit log entries
+</LabStep>
 
-Both the decoy response and the relay response should have been logged:
+<LabStep lab="lab13" id="audit" num={6} title="Verify D1 audit log entries">
+
+Both the decoy response and the relay response should have been
+logged:
 
 ```sh
 wrangler d1 execute fleet-database \
@@ -282,21 +359,29 @@ relay_decision  | {"result":"decoy","path":"/relay/update"}  | 2024-...
 
 Two rows: one `proxy`, one `decoy`, most recent first.
 
-### 7. Understand the profile match logic
+</LabStep>
+
+<LabStep lab="lab13" id="match-logic" num={7} title="Understand the profile match logic">
 
 Open `src/index.js` and find `handleRelay()`. The match sequence is:
 
-1. Load `relay_profile` from KV (cached per-request; cold start costs ~1 KV read).
-2. Check path against `allowed_paths` array: request path must start with one of the
-   listed prefixes.
-3. Check User-Agent against `user_agent_pattern` (substring match for workshop
-   simplicity; a production version uses regex).
+1. Load `relay_profile` from KV (cached per-request; cold start costs
+   ~1 KV read).
+2. Check path against `allowed_paths` array. The request path must
+   start with one of the listed prefixes.
+3. Check User-Agent against `user_agent_pattern` (substring match for
+   workshop simplicity; a production version uses regex).
 4. Check `required_header` name and value against request headers.
-5. If all three match: `fetch(backend + path)`, stream response to client.
-6. If any check fails: load `relay_decoy_html` from KV, return 200 text/html.
-7. In both branches: INSERT into `audit_log` with `action='relay_decision'`,
-   `details` JSON containing `result`, `path`, and a fingerprint of the
-   User-Agent (first 32 chars, not full UA — avoid logging identifying data).
+5. If all three match: `fetch(backend + path)`, stream response to
+   client.
+6. If any check fails: load `relay_decoy_html` from KV, return 200
+   text/html.
+7. In both branches: INSERT into `audit_log` with
+   `action='relay_decision'`, `details` JSON containing `result`,
+   `path`, and a fingerprint of the User-Agent (first 32 chars, not
+   full UA, to avoid logging identifying data).
+
+</LabStep>
 
 ---
 
@@ -304,28 +389,171 @@ Open `src/index.js` and find `handleRelay()`. The match sequence is:
 
 When this lab is complete:
 
-- [ ] `wrangler.toml` has a `/relay/*` route entry for `api.&#36;\{DOMAIN\}`.
+- [ ] `wrangler.toml` has a `/relay/*` route entry for
+      `api.${DOMAIN}`.
 - [ ] KV contains `relay_profile` and `relay_decoy_html` keys.
-- [ ] `app.&#36;\{DOMAIN\}` cloudflared ingress rule is active; `curl https://app.&#36;\{DOMAIN\}/` returns 200.
+- [ ] `app.${DOMAIN}` cloudflared ingress rule is active;
+      `curl https://app.${DOMAIN}/` returns 200.
 - [ ] Invalid-profile curl to `/relay/*` returns decoy HTML.
-- [ ] Valid-profile curl to `/relay/*` returns proxied response from devcontainer.
-- [ ] D1 `audit_log` has a `relay_decision` row for each test request.
+- [ ] Valid-profile curl to `/relay/*` returns proxied response from
+      the operator console.
+- [ ] D1 `audit_log` has a `relay_decision` row for each test
+      request.
+- [ ] `validate.sh` exits 0.
 
 ---
 
 ## Validation
+
+Three validation paths. Pick whichever matches your setup. All three
+call the same `validate.sh` and post the result to the same backend;
+only the delivery channel differs.
+
+**Path 1: `epl` CLI** (recommended from the operator console).
 
 ```sh
 export DOMAIN="<your-domain>"
 export STUDENT="<your-slot>"
 export SERVICE_TOKEN_ID="<from lab08>"
 export SERVICE_TOKEN_SECRET="<from lab08>"
-export RELAY_BACKEND="https://app.&#36;\{DOMAIN\}"  # set if non-default
-chmod +x courses/engagement-platform-labs/labs/lab13-redirector-relay/validate.sh
-courses/engagement-platform-labs/labs/lab13-redirector-relay/validate.sh
+export RELAY_BACKEND="https://app.${DOMAIN}"
+
+epl validate lab13-redirector-relay
 ```
 
+**Path 2: direct script.**
+
+```sh
+export DOMAIN="<your-domain>"
+export STUDENT="<your-slot>"
+export SERVICE_TOKEN_ID="<from lab08>"
+export SERVICE_TOKEN_SECRET="<from lab08>"
+export RELAY_BACKEND="https://app.${DOMAIN}"
+
+bash courses/engagement-platform-labs/labs/lab13-redirector-relay/validate.sh
+```
+
+Or via the Makefile:
+
+```sh
+cd courses/engagement-platform-labs/labs
+make validate-lab13-redirector-relay
+```
+
+**Path 3: paste output into the widget.**
+
+Run `validate.sh` anywhere, copy the full terminal output, and paste
+it into the widget below.
+
+**What the script checks:**
+
+1. Required env vars are set (`DOMAIN`, `RELAY_BACKEND`, plus the
+   service-token pair for the audit-log read).
+2. Invalid-profile request to `/relay/*` returns a decoy response
+   (content-type `text/html`, body matches the decoy fingerprint).
+3. Valid-profile request to `/relay/*` returns a non-decoy proxied
+   response (content does not match the decoy fingerprint).
+4. D1 `audit_log` contains at least 2 rows with
+   `action='relay_decision'` covering both `result=proxy` and
+   `result=decoy`.
+
 <ValidateOutputPaster client:load lab="lab13" />
+
+---
+
+## Primitives and drop-in substitutes
+
+Lab 13 stacks two security-relevant primitives. The **traffic-classifying
+edge proxy** decides whether to forward or to mask each request. The
+**malleable C2 profile** is the data shape that drives the
+classification: a tuple of UA pattern, path allowlist, and required
+header. Either piece substitutes independently.
+
+The Worker code in this lab is one implementation among many. Switching
+to nginx with `map` directives, Caddy with matchers, or Pingora is a
+config or rewrite, not a redesign of the workshop architecture.
+
+### Edge classifier / redirector substitutes
+
+| Name | License | When to consider it |
+|---|---|---|
+| **Cloudflare Worker route** (this lab) | proprietary | JS at the edge; KV-backed profile; tightest fit when the rest of the platform is Workers |
+| **nginx + map directives** | BSD-2 | the canonical reverse-proxy pattern; static config; battle-tested on every Linux box |
+| **HAProxy + ACLs** | GPL-2.0+ | when high throughput matters and you want explicit ACL primitives |
+| **Caddy + matchers** | Apache-2.0 | easy YAML/Caddyfile syntax; auto-TLS built in |
+| **Envoy + HTTP filters** | Apache-2.0 | for service-mesh or L7 routing where the redirector is one filter in a chain |
+| **Apache Traffic Server** | Apache-2.0 | historic CDN classifier; large-scale deployments |
+| **Squid** | GPL-2.0+ | historic forward proxy with ACLs; useful when classification happens client-side |
+| **Pingora** | Apache-2.0 | Cloudflare's Rust proxy framework; pick when you outgrow Worker CPU or memory limits |
+
+### Profile-format substitutes
+
+| Name | License | When to consider it |
+|---|---|---|
+| **Cobalt Strike Malleable C2** | proprietary | the canonical commercial implementation; the file format that everyone copies |
+| **Mythic C2 profiles** | BSD-3 | open-source; supports custom profile types per agent |
+| **Sliver HTTP profiles** | GPL-3.0 | Bishop Fox's Go-based C2; integrates with Sliver implants |
+| **Empire HTTP listeners** | BSD-3 | historical; included for completeness when working with legacy material |
+| **Apfell / Mythic** | BSD-3 | open-source C2 frameworks with profile abstraction |
+| **Oblique-Relay** | reference impl in `github.com/errantpacket/Oblique-Relay` | the Worker-shaped relay this lab is patterned after; supports rotation and per-implant profiles |
+
+### Decoy / honeypot delivery substitutes
+
+| Pattern | When to consider it |
+|---|---|
+| **KV-backed decoy** (this lab) | single profile, single decoy; cheapest |
+| **Static HTML on origin** | simplest; no KV roundtrip |
+| **Generated decoys (Tarpit, T-Pot)** | behavioral honeypot; logs scanner tooling |
+| **404 / random redirect to a legitimate site** | minimal-effort decoy; useful when even an HTML body is too much surface |
+| **Per-fingerprint decoy selection** | when you want to give different decoys to different scanner profiles |
+
+The Lab 13 design picks the simplest workable combination. The Worker
+classifies, the KV holds the profile and the decoy, and the audit log
+records every decision. Replacing any one piece (classifier, profile
+format, decoy delivery) is a localized change, not a re-architecture.
+
+---
+
+## Further reading
+
+**Cloudflare Workers:**
+
+- [Worker routes](https://developers.cloudflare.com/workers/configuration/routing/).
+  How `/relay/*` and `/v1/*` route patterns coexist on the same zone.
+- [KV bindings](https://developers.cloudflare.com/kv/api/read-key-value-pairs/).
+  `env.RATE_LIMITS.get(key)` is what `handleRelay()` uses to fetch the
+  profile and the decoy.
+- [`fetch()` from a Worker](https://developers.cloudflare.com/workers/runtime-apis/fetch/).
+  The mechanism `handleRelay()` uses to proxy valid-profile requests
+  to `app.<DOMAIN>`.
+
+**Malleable C2 reference:**
+
+- [Cobalt Strike Malleable C2 reference](https://www.cobaltstrike.com/help-malleable-c2).
+  The canonical doc for the profile format every other tool copies.
+- [Oblique-Relay (`github.com/errantpacket/Oblique-Relay`)](https://github.com/errantpacket/Oblique-Relay).
+  The Worker-shaped relay this lab is patterned after. Supports
+  per-implant profile rotation and full Malleable C2 parsing.
+
+**Workshop-internal:**
+
+- [Lab 06: Cloudflare Tunnel](../lab06-cloudflare-tunnel/). Where the
+  cloudflared tunnel was set up. The second ingress rule for
+  `app.<DOMAIN>` is appended here.
+- [Lab 07: First Worker](../lab07-first-worker/). Where the
+  `/relay/*` route lives in `wrangler.toml`. Re-deploy after every
+  edit to `src/index.js`.
+- [Lab 09: D1 device registry](../lab09-d1-database/). The
+  `audit_log` table that records `relay_decision` rows.
+- [Lab 10: KV and R2 storage](../lab10-kv-r2-storage/). The KV
+  namespace `RATE_LIMITS` that holds `relay_profile` and
+  `relay_decoy_html`.
+
+---
+
+<MarkCompleteButton client:load lab="lab13" />
+
+> View this page's source: [`labs/lab13-redirector-relay/README.mdx`](https://github.com/errantpacket/OpenWRT_Course/blob/main/courses/engagement-platform-labs/labs/lab13-redirector-relay/README.mdx)
 
 ---
 
@@ -334,44 +562,63 @@ courses/engagement-platform-labs/labs/lab13-redirector-relay/validate.sh
 <details>
 <summary>Valid-profile curl returns decoy HTML instead of proxied response</summary>
 
-Check the KV relay_profile content: `wrangler kv:key get --binding RATE_LIMITS relay_profile`.
-Confirm the `user_agent_pattern` string exactly matches a substring of the `-A` value you
-are sending, and that the `required_header` name and value match. Profile matching is
-case-sensitive in the workshop implementation.
+Check the KV `relay_profile` content:
+`wrangler kv key get --binding RATE_LIMITS --remote relay_profile`.
+Confirm the `user_agent_pattern` string exactly matches a substring of
+the `-A` value you are sending, and that the `required_header` name and
+value match. Profile matching is case-sensitive in the workshop
+implementation.
 
-Also confirm the `/relay/*` Worker route is deployed: check the Cloudflare dashboard under
-Workers & Pages > fleet-gateway > Triggers > Routes.
+Also confirm the `/relay/*` Worker route is deployed: check the
+Cloudflare dashboard under Workers and Pages > fleet-gateway >
+Triggers > Routes.
 
 </details>
 
 <details>
 <summary>Valid-profile curl returns 502 or "upstream connect error"</summary>
 
-The backend (`app.&#36;\{DOMAIN\}`) is not reachable. Check:
+The backend (`app.${DOMAIN}`) is not reachable. Check:
 
-1. cloudflared is running in the devcontainer: `ps aux | grep cloudflared`.
-2. The `app.&#36;\{DOMAIN\}` ingress rule is present in `cloudflared-config.yml`.
-3. nginx is listening on the configured port: `curl -sf http://localhost:8080/`.
-4. The DNS CNAME for `app.&#36;\{DOMAIN\}` points at the correct tunnel ID.
+1. cloudflared is running in the operator console:
+   `ps aux | grep cloudflared`.
+2. The `app.${DOMAIN}` ingress rule is present in
+   `cloudflared-config.yml`.
+3. nginx is listening on the configured port:
+   `curl -sf http://localhost:8080/`.
+4. The DNS CNAME for `app.${DOMAIN}` points at the correct tunnel ID.
 
 </details>
 
 <details>
 <summary>D1 audit_log has no relay_decision rows</summary>
 
-The Worker may not have the FLEET_DB D1 binding, or the binding name does not match the
-one in `src/index.js`. Check `wrangler.toml` for an active (uncommented) `[[d1_databases]]`
-block with `binding = "FLEET_DB"`. If the binding is missing, uncomment it, fill in the
-database_id from Lab 09, and redeploy.
+The Worker may not have the `FLEET_DB` D1 binding, or the binding name
+does not match the one in `src/index.js`. Check `wrangler.toml` for an
+active (uncommented) `[[d1_databases]]` block with
+`binding = "FLEET_DB"`. If the binding is missing, uncomment it, fill
+in the database_id from Lab 09, and redeploy.
 
 </details>
 
 <details>
 <summary>wrangler deploy fails after adding the second route</summary>
 
-The route array syntax in TOML requires commas between entries when they are on separate
-lines inside `[ ]`. Confirm wrangler.toml parses cleanly: `npx wrangler deploy --dry-run`.
-If it fails with a TOML parse error, use the multi-line form shown in Step 3.
+The route array syntax in TOML requires commas between entries when
+they are on separate lines inside `[ ]`. Confirm wrangler.toml parses
+cleanly: `npx wrangler deploy --dry-run`. If it fails with a TOML
+parse error, use the multi-line form shown in step 3.
+
+</details>
+
+<details>
+<summary>KV upload fails: "namespace not found"</summary>
+
+`wrangler kv key put` looks up the binding via `wrangler.toml`. Run
+the command from `lab07-first-worker/worker/` (where `wrangler.toml`
+lives) so the `--binding RATE_LIMITS` flag resolves. Without
+`--remote`, wrangler 4 writes to local storage by default; the Worker
+in production reads from the remote namespace.
 
 </details>
 
@@ -379,14 +626,14 @@ If it fails with a TOML parse error, use the multi-line form shown in Step 3.
 
 ## Take-home extension
 
-The workshop profile matcher uses substring comparison for simplicity. The Oblique-Relay
-reference repo (`github.com/errantpacket/Oblique-Relay`) implements full Malleable C2
-profile parsing: regex UA patterns, multi-header requirements, body content checks, and
-KV-stored per-implant profile rotation. After the course, swap the hardcoded matcher in
-`handleRelay()` for the Oblique-Relay profile loader and test with a real Sliver or Havoc
-profile. The D1 audit log schema (action, details, created_at) is already compatible with
-Oblique-Relay's logging expectations.
+The workshop profile matcher uses substring comparison for simplicity.
+The Oblique-Relay reference repo
+(`github.com/errantpacket/Oblique-Relay`) implements full Malleable C2
+profile parsing: regex UA patterns, multi-header requirements, body
+content checks, and KV-stored per-implant profile rotation. After the
+course, swap the hardcoded matcher in `handleRelay()` for the
+Oblique-Relay profile loader and test with a real Sliver or Havoc
+profile. The D1 audit log schema (action, details, created_at) is
+already compatible with Oblique-Relay's logging expectations.
 
 ---
-
-<MarkCompleteButton client:load lab="lab13" />

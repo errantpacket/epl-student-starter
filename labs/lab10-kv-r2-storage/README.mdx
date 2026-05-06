@@ -1,43 +1,76 @@
 ---
-title: "KV and R2 Storage"
+title: "KV and R2 storage"
 labNumber: 10
 duration: "75 minutes"
 day: "Day 2, Session 3"
 hardwareRequired: false
-widgets: ["MarkCompleteButton", "ValidateOutputPaster"]
+codespaces: "supported"
+widgets: ["EnvironmentToggle", "LabProgress", "LabStep", "EnvBlock", "ValidateOutputPaster", "MarkCompleteButton"]
 ---
 
-import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
+import EnvironmentToggle from '@widgets/EnvironmentToggle.svelte';
+import LabProgress from '@widgets/LabProgress.svelte';
+import LabStep from '@widgets/LabStep.astro';
+import EnvBlock from '@widgets/EnvBlock.astro';
 import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
+import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
 
-> **Self-referential hook:** The downloadable artifacts on this page (build scripts, schemas, enrollment templates) are served from R2 with signed URLs — exactly the pattern you will implement in this lab. The "View source" links in the sidebar call `/api/source/:file` on this site's Worker, which mints a time-limited signed GET URL and streams the file from R2. When your `handleArtifactGet()` is working, it will look almost identical.
+<EnvironmentToggle client:load />
 
-# Lab 10 — KV and R2 Storage
+<LabProgress lab="lab10" client:load steps={[
+  { id: 'kv-create',  label: '1. Create the KV namespace' },
+  { id: 'r2-create',  label: '2. Create the R2 bucket' },
+  { id: 'wrangler',   label: '3. Update wrangler.toml' },
+  { id: 'review',     label: '4. Review the new Worker endpoints' },
+  { id: 'redeploy',   label: '5. Redeploy the Worker' },
+  { id: 'enqueue',    label: '6. Test command enqueue' },
+  { id: 'read-job',   label: '7. Read the job back from KV via /v1/jobs' },
+  { id: 'upload',     label: '8. Test artifact upload (Worker-proxy mode)' },
+  { id: 'download',   label: '9. Retrieve the artifact' },
+  { id: 'kv-inspect', label: '10. Verify KV directly with wrangler' },
+  { id: 'validate',   label: 'Run validation' },
+]} />
+
+# Lab 10 — KV and R2 storage
 
 **Duration: 75 minutes**
-**Day:** 2, Session 3
 
-The enrollment and device-list endpoints from Lab 09 run the relational spine of the
-platform. This lab adds the operational layer: a KV-backed job queue for command dispatch
-and an R2-backed artifact store with signed URL delivery. When this lab is done, an
-operator can enqueue a command to a specific device (the Mango sees it next time it polls),
-and a device can upload a pcap or other artifact and the operator can retrieve it via a
-time-limited signed URL.
+> **Self-referential hook.** The downloadable artifacts on this page
+> (build scripts, schemas, enrollment templates) are served from R2 and
+> exposed through the same Worker-proxy pattern you are about to
+> implement. The "View source" links in the sidebar call
+> `/api/source/:file` on this site's Worker, which streams the file from
+> R2 through the binding. When your `handleArtifactGet()` is working it
+> will look almost identical.
 
-These two patterns — KV job queue and R2 signed-URL handoff — are the core of the Lab 14
-capstone. Understand them here.
+The enrollment and device-list endpoints from Lab 09 run the relational
+spine of the platform. This lab adds the operational layer: a KV-backed
+job queue for command dispatch and an R2-backed artifact store for
+upload and retrieval. When this lab is done, an operator can enqueue a
+command to a specific device (the Mango sees it next time it polls), and
+a device can upload a pcap or other artifact and the operator can
+retrieve it back through the same Worker route, gated by the same Lab 08
+Access policy.
+
+These two patterns (KV job queue and R2 artifact handoff) are the core
+of the Lab 14 capstone. Understand them here.
 
 ---
 
 ## Learning objectives
 
-- Provision a KV namespace with `wrangler kv:namespace create` and understand namespace IDs.
+- Provision a KV namespace with `wrangler kv namespace create` and
+  understand namespace IDs.
 - Provision an R2 bucket with `wrangler r2 bucket create`.
 - Wire both bindings in `wrangler.toml` and redeploy.
-- Use KV for a job queue: write with `put(key, value, {expirationTtl})`, read with `get(key)`.
-- Use R2 presigned URLs for secure, time-limited PUT and GET operations.
-- Understand the Workers KV data model: key-value pairs with optional TTL, no indexes.
-- Understand R2 as an object store: bucket/key model, HTTP API, access via signed URLs.
+- Use KV for a job queue: write with `put(key, value, {expirationTtl})`,
+  read with `get(key)`.
+- Stream artifact uploads and downloads through the Worker against the
+  R2 binding (Worker-proxy mode).
+- Understand the Workers KV data model: key-value pairs with optional
+  TTL, no indexes.
+- Understand R2 as an object store: bucket and key model, accessed
+  directly via the Worker binding or via S3-compatible signed URLs.
 
 ---
 
@@ -53,20 +86,55 @@ bash courses/engagement-platform-labs/labs/lab09-d1-database/validate.sh
 wrangler whoami
 
 # DOMAIN is exported
-echo "&#36;\{DOMAIN\}"
+echo "${DOMAIN}"
+
+# CF Access service-token credentials from Lab 08 are exported
+echo "${CF_ACCESS_CLIENT_ID:?missing}"
+echo "${CF_ACCESS_CLIENT_SECRET:?missing}"
 ```
 
-The Worker currently returns 501 for `/v1/commands/&lt;id&gt;` — that changes in this lab.
+The Worker currently returns 401 (Lab 08 Access gate) or 501 (stub) for
+`/v1/commands/<id>`. That changes in this lab.
+
+<EnvBlock env="codespace">
+
+> **Codespace users.** wrangler is pre-installed in the operator console
+> and your `~/.config/` directory is persisted. Run `wrangler whoami` to
+> confirm your session is active. If not, run `wrangler login` (OAuth) so
+> later steps that bind KV and R2 succeed.
+
+</EnvBlock>
+
+<EnvBlock env="local-dev,minimal-local">
+
+> **Local Dev / Minimal local.** If the wrangler API token in your shell
+> lacks the `kv bind` or `r2 bind` permissions, step 5 will fail with
+> `[code 10023]`. The simplest unblock is `wrangler login` for an
+> interactive OAuth grant.
+
+</EnvBlock>
+
+---
+
+## Where each step runs
+
+All steps run in the operator console plus the Cloudflare KV and R2
+backends over the wrangler remote API. No bench hardware is involved.
+
+| Step | Operator console |
+|------|:----------------:|
+| 1–10. All steps | yes |
+| Validation     | yes |
 
 ---
 
 ## Walkthrough
 
-### 1. Create the KV namespace
+<LabStep lab="lab10" id="kv-create" num={1} title="Create the KV namespace">
 
 ```sh
 cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
-npx wrangler kv:namespace create RATE_LIMITS
+npx wrangler kv namespace create RATE_LIMITS
 ```
 
 Expected output:
@@ -78,7 +146,9 @@ Add the following to your configuration file in your kv_namespaces array:
 
 Copy the `id` value.
 
-### 2. Create the R2 bucket
+</LabStep>
+
+<LabStep lab="lab10" id="r2-create" num={2} title="Create the R2 bucket">
 
 ```sh
 npx wrangler r2 bucket create artifacts-bucket
@@ -90,10 +160,12 @@ Expected output:
 Created bucket 'artifacts-bucket'
 ```
 
-### 3. Update wrangler.toml
+</LabStep>
 
-Open `worker/wrangler.toml`. The `[[kv_namespaces]]` and `[[r2_buckets]]` blocks are
-already present. Replace the placeholder IDs:
+<LabStep lab="lab10" id="wrangler" num={3} title="Update wrangler.toml">
+
+Open `worker/wrangler.toml`. The `[[kv_namespaces]]` and `[[r2_buckets]]`
+blocks are already present. Replace the placeholder ID:
 
 ```toml
 [[kv_namespaces]]
@@ -109,7 +181,7 @@ Using sed:
 
 ```sh
 KV_ID="paste-your-namespace-id-here"
-sed -i "s/YOUR_KV_NAMESPACE_ID/&#36;\{KV_ID\}/" wrangler.toml
+sed -i "s/YOUR_KV_NAMESPACE_ID/${KV_ID}/" wrangler.toml
 ```
 
 Verify both blocks are populated:
@@ -119,61 +191,84 @@ grep -A2 "kv_namespaces" wrangler.toml
 grep -A2 "r2_buckets" wrangler.toml
 ```
 
-### 4. Review the new Worker endpoints
+</LabStep>
 
-Open `labs/lab07-first-worker/worker/src/index.js` and read the four new functions
-before deploying:
+<LabStep lab="lab10" id="review" num={4} title="Review the new Worker endpoints">
+
+Open `labs/lab07-first-worker/worker/src/index.js` and read the four new
+functions before deploying:
 
 **handleCommand (updated from Lab 07 stub):**
-- Accepts `POST /v1/commands/<device_id>` with body `{ command, params?, timeout? }`.
+
+- Accepts `POST /v1/commands/<device_id>` with body
+  `{ command, params?, timeout? }`.
 - Generates a UUID job_id.
-- Calls `enqueueJob()` — a shared utility that writes to KV under key `job:&lt;uuid&gt;`.
-- KV TTL = `timeout + 300` seconds (5-minute grace period after job deadline).
+- Calls `enqueueJob()`, a shared utility that writes to KV under key
+  `job:<uuid>`.
+- KV TTL = `timeout + 300` seconds (5-minute grace period after job
+  deadline).
 - Writes an `audit_log` row with action `"command_dispatch"`.
 - Returns `{ job_id, status: "queued", device_id }`.
 
 **handleJobStatus:**
+
 - Accepts `GET /v1/jobs/<job_id>`.
 - Reads `job:<job_id>` from KV; returns 404 if missing or expired.
 - The Mango (Lab 12) polls this endpoint to receive its next command.
 
 **handleArtifactUpload:**
-- Accepts `POST /v1/artifacts/upload` with optional body `{ artifact_id?, content_type? }`.
-- Mints a presigned PUT URL against the R2 `ARTIFACTS` bucket, valid for 15 minutes.
-- Returns `{ artifact_id, upload_url, expires_in, content_type }`.
-- The caller (Mango, devcontainer) uses the `upload_url` to PUT the artifact directly
-  to R2 — the Worker is never in the data path for the upload itself.
+
+- Accepts `POST /v1/artifacts/upload` with optional body
+  `{ artifact_id?, content_type? }`.
+- Returns `{ artifact_id, upload_url, expires_in, content_type }`. The
+  `upload_url` points at the same Worker's `/data` sub-path.
 
 **handleArtifactGet:**
-- Accepts `GET /v1/artifacts/<artifact_id>` (supports nested paths: `/v1/artifacts/captures/foo.pcap`).
-- Verifies the object exists in R2 with `env.ARTIFACTS.head()` before minting a URL.
-- Mints a presigned GET URL valid for 1 hour.
+
+- Accepts `GET /v1/artifacts/<artifact_id>` (supports nested paths:
+  `/v1/artifacts/captures/foo.pcap`).
+- Verifies the object exists in R2 with `env.ARTIFACTS.head()` before
+  returning a download URL.
 - Returns `{ artifact_id, download_url, expires_in, size, content_type }`.
 
-The `enqueueJob()` utility is also used by `handleDiscordChatops()` in Lab 11 — this
-is the integration point. Any caller that enqueues a job produces a job object that
-`handleJobStatus()` can read back. The shape is stable; do not change it.
+The `enqueueJob()` utility is also used by `handleGithubChatops()` in
+Lab 11; this is the integration point. Any caller that enqueues a job
+produces a job object that `handleJobStatus()` can read back. The shape
+is stable; do not change it.
 
-### 5. Redeploy the Worker
+</LabStep>
+
+<LabStep lab="lab10" id="redeploy" num={5} title="Redeploy the Worker">
 
 ```sh
 cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
 npx wrangler deploy
 ```
 
-Confirm the deploy output shows the same route. Check the bindings are listed:
+Confirm the deploy output shows the same route. Check the bindings are
+listed:
 
 ```sh
 npx wrangler deployments list | head -5
 ```
 
-### 6. Test command enqueue
+> **Token note.** If the deploy fails with `[code 10023] d1 bindings
+> require d1 bind permission` (or the same error for kv/r2), the deploy
+> token lacks binding-bind perms. Run `wrangler login` for an OAuth
+> grant; the OAuth-grant token has the broadest perms including all
+> three bindings.
+
+</LabStep>
+
+<LabStep lab="lab10" id="enqueue" num={6} title="Test command enqueue">
 
 ```sh
 DEVICE_ID="lab09-test-device"   # device you enrolled in Lab 09
 
 ENQUEUE_RESP=$(curl -s \
-    -X POST "https://api.&#36;\{DOMAIN\}/v1/commands/&#36;\{DEVICE_ID\}" \
+    -X POST "https://api.${DOMAIN}/v1/commands/${DEVICE_ID}" \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
     -H "Content-Type: application/json" \
     -d '{"command": "status", "timeout": 30}')
 
@@ -194,13 +289,18 @@ Store the job_id:
 
 ```sh
 JOB_ID=$(echo "$ENQUEUE_RESP" | jq -r '.job_id')
-echo "JOB_ID: &#36;\{JOB_ID\}"
+echo "JOB_ID: ${JOB_ID}"
 ```
 
-### 7. Read the job back from KV via /v1/jobs
+</LabStep>
+
+<LabStep lab="lab10" id="read-job" num={7} title="Read the job back from KV via /v1/jobs">
 
 ```sh
-curl -s "https://api.&#36;\{DOMAIN\}/v1/jobs/&#36;\{JOB_ID\}" | jq .
+curl -s \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
+    "https://api.${DOMAIN}/v1/jobs/${JOB_ID}" | jq .
 ```
 
 Expected response:
@@ -217,13 +317,33 @@ Expected response:
 }
 ```
 
-### 8. Test artifact upload via signed URL
+</LabStep>
 
-First, request a signed PUT URL from the Worker:
+<LabStep lab="lab10" id="upload" num={8} title="Test artifact upload (Worker-proxy mode)">
+
+The in-class upload flow is two-step but does **not** use S3 v4 signed
+URLs. Both endpoints sit on the same Worker behind the same CF Access
+gate from Lab 08; the `upload_url` returned by the metadata POST points
+at a `/data` sub-path on the Worker itself, and the Worker streams the
+PUT body straight into R2 via the binding.
+
+> **Why not real signed URLs in class.** Cloudflare's R2 binding does
+> not expose a `createPresignedUrl()` method. Real S3 v4 signing
+> requires an R2 access key plus secret as Worker secrets and a SigV4
+> helper (e.g. `aws4fetch`) targeting the
+> `<account>.r2.cloudflarestorage.com` S3-compatible endpoint. That is
+> real per-cohort setup work. The Worker-proxy path here keeps the same
+> client contract (POST metadata, PUT bytes, GET metadata, GET bytes)
+> without per-cohort credential management. The signed-URL variant is
+> documented in
+> [`take-home-r2-signed-urls.md`](./take-home-r2-signed-urls.md) for
+> students who want the production ops pattern.
 
 ```sh
 UPLOAD_RESP=$(curl -s \
-    -X POST "https://api.&#36;\{DOMAIN\}/v1/artifacts/upload" \
+    -X POST "https://api.${DOMAIN}/v1/artifacts/upload" \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
     -H "Content-Type: application/json" \
     -d '{"content_type": "application/octet-stream"}')
 
@@ -235,13 +355,13 @@ Expected response:
 ```json
 {
   "artifact_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "upload_url": "https://...",
+  "upload_url": "https://api.<DOMAIN>/v1/artifacts/<artifact_id>/data",
   "expires_in": 900,
   "content_type": "application/octet-stream"
 }
 ```
 
-Create a fixture file and upload it using the signed URL:
+Create a fixture file and PUT it to the upload URL:
 
 ```sh
 ARTIFACT_ID=$(echo "$UPLOAD_RESP" | jq -r '.artifact_id')
@@ -250,47 +370,62 @@ UPLOAD_URL=$(echo "$UPLOAD_RESP" | jq -r '.upload_url')
 # Create a deterministic test fixture
 printf 'lab10-artifact-test-data\n' > /tmp/lab10-fixture.bin
 FIXTURE_SHA=$(sha256sum /tmp/lab10-fixture.bin | cut -d' ' -f1)
-echo "Fixture SHA256: &#36;\{FIXTURE_SHA\}"
+echo "Fixture SHA256: ${FIXTURE_SHA}"
 
-# PUT directly to R2 via the signed URL
+# PUT to the Worker; the Worker streams body to R2.
 curl -s -o /dev/null -w "%{http_code}\n" \
-    -X PUT "&#36;\{UPLOAD_URL\}" \
+    -X PUT "${UPLOAD_URL}" \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
     -H "Content-Type: application/octet-stream" \
     --data-binary @/tmp/lab10-fixture.bin
 # Expected: 200
 ```
 
-### 9. Retrieve the artifact via signed GET URL
+</LabStep>
+
+<LabStep lab="lab10" id="download" num={9} title="Retrieve the artifact">
 
 ```sh
-DOWNLOAD_RESP=$(curl -s "https://api.&#36;\{DOMAIN\}/v1/artifacts/&#36;\{ARTIFACT_ID\}")
+DOWNLOAD_RESP=$(curl -s \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
+    "https://api.${DOMAIN}/v1/artifacts/${ARTIFACT_ID}")
 echo "$DOWNLOAD_RESP" | jq .
 
 DOWNLOAD_URL=$(echo "$DOWNLOAD_RESP" | jq -r '.download_url')
 
-# Download and verify SHA
-curl -s "&#36;\{DOWNLOAD_URL\}" -o /tmp/lab10-retrieved.bin
+# Download and verify SHA. Same auth gate.
+curl -s \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
+    "${DOWNLOAD_URL}" -o /tmp/lab10-retrieved.bin
 RETRIEVED_SHA=$(sha256sum /tmp/lab10-retrieved.bin | cut -d' ' -f1)
 
-echo "Original SHA:  &#36;\{FIXTURE_SHA\}"
-echo "Retrieved SHA: &#36;\{RETRIEVED_SHA\}"
+echo "Original SHA:  ${FIXTURE_SHA}"
+echo "Retrieved SHA: ${RETRIEVED_SHA}"
 
 if [ "$FIXTURE_SHA" = "$RETRIEVED_SHA" ]; then
-    echo "SHA match — artifact round-trip verified."
+    echo "SHA match. Artifact round-trip verified."
 else
-    echo "SHA MISMATCH — something changed in transit."
+    echo "SHA MISMATCH. Something changed in transit."
 fi
 ```
 
-### 10. Verify KV directly with wrangler
+</LabStep>
+
+<LabStep lab="lab10" id="kv-inspect" num={10} title="Verify KV directly with wrangler">
 
 ```sh
 # List keys matching job: prefix
-npx wrangler kv:key list --binding=RATE_LIMITS --prefix="job:"
+npx wrangler kv key list --binding=RATE_LIMITS --remote --prefix="job:"
 ```
 
-You should see the job_id you created in step 6. After the TTL expires the key
-disappears — this is the intended behavior (completed jobs expire automatically).
+You should see the job_id you created in step 6. After the TTL expires
+the key disappears. This is the intended behavior; completed jobs expire
+automatically.
+
+</LabStep>
 
 ---
 
@@ -298,29 +433,173 @@ disappears — this is the intended behavior (completed jobs expire automaticall
 
 When this lab is complete:
 
-- [ ] KV namespace `RATE_LIMITS` exists; `wrangler.toml` has the namespace ID.
+- [ ] KV namespace `RATE_LIMITS` exists; `wrangler.toml` has the
+      namespace ID.
 - [ ] R2 bucket `artifacts-bucket` exists.
 - [ ] `/v1/commands/<device_id>` returns `{ job_id, status: "queued" }`.
 - [ ] `/v1/jobs/<job_id>` returns the job object read from KV.
-- [ ] `/v1/artifacts/upload` returns a signed PUT URL.
-- [ ] Uploading to the signed URL stores the artifact in R2.
-- [ ] `/v1/artifacts/&lt;id&gt;` returns a signed GET URL.
-- [ ] Downloading via the signed GET URL reproduces the original SHA256.
+- [ ] `/v1/artifacts/upload` returns a Worker-proxy upload URL.
+- [ ] PUTting to the upload URL stores the artifact in R2.
+- [ ] `/v1/artifacts/<id>` returns a Worker-proxy download URL.
+- [ ] Downloading via the download URL reproduces the original SHA256.
+- [ ] `validate.sh` exits 0 (12/12 PASS).
 
 ---
 
 ## Validation
 
+Three validation paths. Pick whichever matches your setup. All three call
+the same `validate.sh` and post the result to the same backend; only the
+delivery channel differs.
+
+**Path 1: `epl` CLI** (recommended from the operator console).
+
 ```sh
-chmod +x courses/engagement-platform-labs/labs/lab10-kv-r2-storage/validate.sh
 export DOMAIN="<your-domain>"
-courses/engagement-platform-labs/labs/lab10-kv-r2-storage/validate.sh
+export CF_ACCESS_CLIENT_ID="<your-client-id>"
+export CF_ACCESS_CLIENT_SECRET="<your-client-secret>"
+
+epl validate lab10-kv-r2-storage
 ```
 
-The script performs the full round-trip: enqueue command, read from KV, upload fixture
-via signed URL, download via signed URL, assert SHA match.
+**Path 2: direct script.**
+
+```sh
+export DOMAIN="<your-domain>"
+export CF_ACCESS_CLIENT_ID="<your-client-id>"
+export CF_ACCESS_CLIENT_SECRET="<your-client-secret>"
+
+bash courses/engagement-platform-labs/labs/lab10-kv-r2-storage/validate.sh
+```
+
+Or via the Makefile:
+
+```sh
+cd courses/engagement-platform-labs/labs
+make validate-lab10-kv-r2-storage
+```
+
+**Path 3: paste output into the widget.**
+
+Run `validate.sh` anywhere, copy the full terminal output, and paste it
+into the widget below.
+
+**What the script checks** (4 sections, 12 explicit assertions):
+
+1. **Command enqueue.** POST to `/v1/commands/<device_id>` returns HTTP
+   200 with a UUID `job_id` and `status: "queued"`.
+2. **Job status read-back.** GET `/v1/jobs/<job_id>` returns the queued
+   job with the original `command`, `params`, and `device_id`.
+3. **Artifact upload.** POST to `/v1/artifacts/upload` returns a
+   Worker-proxy `upload_url`; PUT of a fixture to that URL returns HTTP
+   200; subsequent metadata read confirms the stored object size.
+4. **Artifact download with SHA check.** GET `/v1/artifacts/<id>`
+   returns a `download_url`; downloading via that URL produces bytes
+   whose SHA256 matches the fixture SHA.
+
+The walked verification 2026-05-05 produced ALL 12 PASS on the
+instructor reference slot. See
+[`take-home-r2-signed-urls.md`](./take-home-r2-signed-urls.md) for the
+signed-URL-direct variant and the tradeoff table.
 
 <ValidateOutputPaster client:load lab="lab10" />
+
+---
+
+## Primitives and drop-in substitutes
+
+Lab 10 stacks two primitives: an **ephemeral key-value store with TTL**
+used as a job queue (KV under key `job:<uuid>`) and an **object store
+for arbitrary blobs with conditional read/write gating** used for
+artifacts (R2 with the binding read through the Worker). Either piece
+substitutes independently.
+
+The Worker's `enqueueJob()` and `handleArtifactGet()` both treat the
+underlying primitive as a black box. Swapping KV for Redis or R2 for
+S3 changes the binding code, not the contract that the Mango or the
+operator sees.
+
+### Key-value / job-queue substitutes
+
+| Name | License | When to consider it |
+|---|---|---|
+| **Cloudflare KV** (this lab) | proprietary | eventually consistent; edge-replicated; free tier; tightest fit on Workers |
+| **Workers Durable Objects** | proprietary | strongly consistent KV with single-writer per object; pick when ordering across writes matters |
+| **Redis / Valkey** | BSD-3 (Valkey) / RSALv2 (Redis) | the canonical in-memory KV with expiry; rich data structures (streams, sorted sets) when "queue" outgrows "key with TTL" |
+| **AWS DynamoDB** | proprietary | NoSQL with TTL; multi-region; pay per request |
+| **AWS SQS** | proprietary | true queue semantics with visibility timeout and dead-letter; better when you need at-least-once delivery |
+| **RabbitMQ / NATS / Kafka** | MPL-2.0 / Apache-2.0 / Apache-2.0 | open-source brokers when KV-as-queue is no longer enough |
+| **etcd / Consul KV** | Apache-2.0 / MPL-2.0 | when the queue store is also config / service discovery |
+| **Memcached** | BSD | when values are short-lived, write-rare, read-many |
+
+### Blob store substitutes
+
+| Name | License | When to consider it |
+|---|---|---|
+| **Cloudflare R2** (this lab) | proprietary | S3-compatible; no egress fees; free tier; pairs with Workers via binding |
+| **AWS S3** | proprietary | the reference S3 API; deepest tooling and SDK ecosystem |
+| **Backblaze B2** | proprietary | low-cost; S3-compatible; good archive tier |
+| **MinIO** | AGPL-3.0 | self-hosted S3-compatible; single-binary deploy |
+| **Garage** | AGPL-3.0 | self-hosted S3-compatible; designed for geo-distributed homelab and small-team deployments |
+| **SeaweedFS** | Apache-2.0 | S3-compatible; file plus object hybrid; large-file friendly |
+| **Tigris** | proprietary | managed S3-compatible with low-latency global replication |
+| **IPFS / Filecoin** | MIT plus Apache-2.0 | content-addressed; useful when immutability and verifiable hashing are the goal |
+
+### Delivery models
+
+The "how the bytes move" axis is orthogonal to which store is behind it.
+Lab 10 ships **Worker-proxy mode** (the Worker reads or writes the
+object on every byte). The take-home doc covers two more.
+
+| Mode | Authentication | When to consider it |
+|---|---|---|
+| **Worker-proxy** (this lab) | CF Access on the Worker route | every request gated by Access; bytes flow through the Worker; no per-cohort R2 credentials |
+| **R2 signed URLs** (S3 v4) | URL-embedded HMAC, time-limited | production pattern; bytes flow direct from R2 to client; needs `aws4fetch` and per-cohort access key |
+| **R2 public buckets** | none (or Worker-issued JWT in URL) | static assets only; never for user data |
+
+---
+
+## Further reading
+
+**Cloudflare KV:**
+
+- [KV overview](https://developers.cloudflare.com/kv/).
+  Data model, eventual consistency, regional vs global reads.
+- [`wrangler kv` reference](https://developers.cloudflare.com/workers/wrangler/commands/#kv).
+  `namespace create`, `key list`, `key get`, `key put`, `key delete`.
+  All take `--remote` (production) or `--local` (miniflare).
+- [KV from Workers](https://developers.cloudflare.com/kv/api/read-key-value-pairs/).
+  `env.NAMESPACE.get()`, `.put()`, `.delete()`, `.list()`.
+
+**Cloudflare R2:**
+
+- [R2 overview](https://developers.cloudflare.com/r2/).
+  Bucket and object model, pricing, lifecycle rules.
+- [R2 binding API in Workers](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/).
+  `env.BUCKET.put()`, `.get()`, `.head()`, `.list()`, `.delete()`.
+- [R2 S3 compatibility](https://developers.cloudflare.com/r2/api/s3/api/).
+  Useful when the consumer is already an S3 client. Required for the
+  signed-URL take-home variant.
+
+**Workshop-internal:**
+
+- [Lab 07: First Worker](../lab07-first-worker/). The Worker that gets
+  the new KV and R2 bindings here.
+- [Lab 08: Cloudflare Access](../lab08-cloudflare-access/). Mints the
+  service token used on every request in this lab.
+- [Lab 09: D1 device registry](../lab09-d1-database/). The audit_log
+  table records `command_dispatch`, `artifact_upload`, and
+  `artifact_get` events the Worker writes here.
+- [Lab 14: Capstone](../lab14-capstone/). Drives the same `enqueueJob`
+  and Worker-proxy artifact path end-to-end with a real Mango.
+- [`take-home-r2-signed-urls.md`](./take-home-r2-signed-urls.md). The
+  S3 v4 signed-URL variant of the upload/download path.
+
+---
+
+<MarkCompleteButton client:load lab="lab10" />
+
+> View this page's source: [`labs/lab10-kv-r2-storage/README.mdx`](https://github.com/errantpacket/OpenWRT_Course/blob/main/courses/engagement-platform-labs/labs/lab10-kv-r2-storage/README.mdx)
 
 ---
 
@@ -329,8 +608,9 @@ via signed URL, download via signed URL, assert SHA match.
 <details>
 <summary>/v1/commands returns 500 "RATE_LIMITS is not defined"</summary>
 
-- The KV namespace ID placeholder was not substituted. Check `wrangler.toml` for
-  `YOUR_KV_NAMESPACE_ID` and substitute your real ID.
+- The KV namespace ID placeholder was not substituted. Check
+  `wrangler.toml` for `YOUR_KV_NAMESPACE_ID` and substitute your real
+  ID.
 - Redeploy after editing `wrangler.toml`.
 
 </details>
@@ -338,19 +618,32 @@ via signed URL, download via signed URL, assert SHA match.
 <details>
 <summary>/v1/artifacts/upload returns 500 "ARTIFACTS is not defined"</summary>
 
-- Same issue as above but for the R2 binding. Confirm `[[r2_buckets]]` is uncommented
-  and `bucket_name = "artifacts-bucket"` matches the bucket you created.
+- Same issue as above but for the R2 binding. Confirm `[[r2_buckets]]`
+  is uncommented and `bucket_name = "artifacts-bucket"` matches the
+  bucket you created.
 
 </details>
 
 <details>
-<summary>Signed URL PUT returns 403 Forbidden</summary>
+<summary>wrangler deploy fails with "[code 10023] d1 bindings require d1 bind permission"</summary>
 
-- The signed URL is single-use and time-limited. If more than 15 minutes have passed
-  since calling `/v1/artifacts/upload`, the URL has expired. Request a new one.
-- Ensure the `Content-Type` in your PUT request matches the `content_type` you passed
-  to the upload endpoint. Some R2 signed URL implementations bind the content-type
-  into the signature.
+The deploy token lacks binding-bind perms (the same error class affects
+KV and R2 bindings). Run `wrangler login` for an interactive OAuth
+grant. The OAuth-grant token has the broadest perms including all three
+binding-bind capabilities.
+
+</details>
+
+<details>
+<summary>PUT to upload_url returns 403 Forbidden</summary>
+
+- The Worker-proxy upload URL is gated by the same CF Access policy as
+  the metadata POST. Confirm both `CF-Access-Client-Id` and
+  `CF-Access-Client-Secret` headers are present on the PUT.
+- The URL is time-limited (`expires_in: 900`). If more than 15 minutes
+  have passed since the metadata POST, request a new upload URL.
+- Check `Content-Type` on the PUT matches the `content_type` you passed
+  in the metadata POST.
 
 </details>
 
@@ -358,20 +651,23 @@ via signed URL, download via signed URL, assert SHA match.
 <summary>/v1/artifacts/&lt;id&gt; returns 404 "Artifact not found"</summary>
 
 - The upload may not have completed before you called the GET endpoint.
-- Verify the upload returned HTTP 200. If not, the artifact does not exist in R2.
-- Check `wrangler r2 object get artifacts-bucket <artifact_id>` to confirm the object
-  exists from the wrangler side.
+- Verify the upload returned HTTP 200. If not, the artifact does not
+  exist in R2.
+- Check `wrangler r2 object get artifacts-bucket <artifact_id>` to
+  confirm the object exists from the wrangler side.
 
 </details>
 
 <details>
 <summary>KV key list shows no results after enqueue</summary>
 
-- `wrangler kv:key list` requires the namespace ID, not just the binding name.
-  Use `--binding=RATE_LIMITS` (not `--namespace-id`) when running from the worker
+- `wrangler kv key list` requires the namespace ID, not just the
+  binding name, and `--remote` to target the production namespace.
+  Use `--binding=RATE_LIMITS --remote` when running from the worker
   directory where `wrangler.toml` is present.
-- Keys with a short TTL may have already expired. The default job TTL is
-  `timeout + 300` seconds. For a 30-second timeout job, the key expires in 330s.
+- Keys with a short TTL may have already expired. The default job TTL
+  is `timeout + 300` seconds. For a 30-second timeout job, the key
+  expires in 330s.
 
 </details>
 
@@ -379,22 +675,27 @@ via signed URL, download via signed URL, assert SHA match.
 
 ## Take-home extension
 
-The `enqueueJob()` utility sets `status: "queued"` but never updates it to `"running"`
-or `"completed"`. For a production deployment, the Mango would need to write back a
-status update after executing the command. Add a `/v1/jobs/&lt;id&gt;/update` endpoint to
-the Worker that:
+The `enqueueJob()` utility sets `status: "queued"` but never updates it
+to `"running"` or `"completed"`. For a production deployment, the Mango
+would need to write back a status update after executing the command.
+Add a `/v1/jobs/<id>/update` endpoint to the Worker that:
 
 1. Reads the current job from KV.
 2. Accepts a body `{ status, result?, error? }`.
 3. Writes the updated job back to KV with the same TTL.
 4. Writes an `audit_log` row with action `"job_update"`.
 
-This is the pattern the Lab 14 capstone uses — but the capstone currently short-circuits
-by observing R2 directly. The full job lifecycle (queued → running → completed) is
-useful for monitoring long-running commands.
+This is the pattern the Lab 14 capstone uses; the capstone currently
+short-circuits by observing R2 directly. The full job lifecycle (queued
+→ running → completed) is useful for monitoring long-running commands.
 
-See `take-home/lab10-job-lifecycle/` for the skeleton.
+For the **signed-URL-direct** variant of the upload/download path (real
+S3 v4 signing against R2), see
+[`take-home-r2-signed-urls.md`](./take-home-r2-signed-urls.md). It
+covers the `aws4fetch` integration, the per-cohort R2 access key
+provisioning, and the trade-offs versus the Worker-proxy mode used
+in-class.
+
+See `take-home/lab10-job-lifecycle/` for the job-lifecycle skeleton.
 
 ---
-
-<MarkCompleteButton client:load lab="lab10" />

@@ -184,25 +184,37 @@ The D1, KV, and R2 binding sections are present but commented out. You will
 uncomment them in Labs 09 and 10 when those services are provisioned. Do not
 remove the comments.
 
-**Substitute your domain in wrangler.toml:**
+**Substitute your domain (and the parent zone) in wrangler.toml:**
+
+`wrangler.toml` ships with two distinct placeholders. `YOUR_DOMAIN` is your
+slot's full hostname (e.g., `0b38904c.eplabs.cloud`); `YOUR_PARENT_ZONE`
+is the actual Cloudflare zone the route binds against. Under the
+in-class **Option A** path the parent zone is `eplabs.cloud` (not your
+slot — Cloudflare needs the real zone name on the route binding).
+Under the take-home BYO-domain path they are usually the same value.
 
 ```sh
 # Run from inside worker/
-sed -i "s/YOUR_DOMAIN/${DOMAIN}/g" wrangler.toml
+# In-class (Option A): slot under shared eplabs.cloud
+sed -i "s/YOUR_DOMAIN/${DOMAIN}/g; s/YOUR_PARENT_ZONE/eplabs.cloud/g" wrangler.toml
+
+# Take-home (BYO): your own zone is both the slot and the parent
+# sed -i "s/YOUR_DOMAIN/${DOMAIN}/g; s/YOUR_PARENT_ZONE/${DOMAIN}/g" wrangler.toml
 ```
 
-Verify that no `YOUR_DOMAIN` literals remain:
+Verify no placeholders remain:
 
 ```sh
-grep "YOUR_DOMAIN" wrangler.toml
+grep -E "YOUR_DOMAIN|YOUR_PARENT_ZONE" wrangler.toml
 # Expected: no output (empty)
 ```
 
-Verify your domain appears in all three places:
+Verify your domain appears in three places (two route patterns +
+`RELAY_BACKEND`):
 
 ```sh
 grep "${DOMAIN}" wrangler.toml
-# Expected: three matches (two routes entries and RELAY_BACKEND)
+# Expected: three matches
 ```
 
 > **Why the placeholder ships intentionally.** `wrangler.toml` is committed
@@ -293,25 +305,34 @@ have propagated yet. Wait 30 seconds and retry.
 <LabStep lab="lab07" id="stubs" num={7} title="Verify the stub endpoints return 501">
 
 ```sh
-# Enroll stub
+# Enroll endpoint (requires CF Access JWT or service token in Lab 08+)
 curl -s -o /dev/null -w "%{http_code}" \
     -X POST https://api.${DOMAIN}/v1/devices/enroll
-# Expected: 501
+# Expected: 401 (auth required — Lab 08 wires the Access JWT path)
 
-# Device list stub
+# Device list (same)
 curl -s -o /dev/null -w "%{http_code}" \
     https://api.${DOMAIN}/v1/devices
-# Expected: 501
+# Expected: 401
 
-# Command stub (any device id)
+# Command (any device id)
 curl -s -o /dev/null -w "%{http_code}" \
     -X POST https://api.${DOMAIN}/v1/commands/test-device
-# Expected: 501
+# Expected: 400 (missing required body fields) or 401 if the auth gate is hit first
 ```
 
-HTTP 501 is the correct response: "Not Implemented, come back in Lab 09."
-A 404 here means the request matched the Worker route but fell through to the
-`default` case in `handleRequest()`; check your curl path for typos.
+HTTP 401/400 here is correct for Lab 07: the Worker is reachable via your
+custom domain route, the request was dispatched to the right handler, and
+the handler refused before doing any D1/KV/R2 work. Lab 08 adds the
+Cloudflare Access service token that turns the 401 into 200/501-equivalent
+behavior. A 404 means the request fell through to the `default` case in
+`handleRequest()`; check your curl path for typos.
+
+> **Behavior note.** The worker code is the complete Labs 07–14
+> implementation. Earlier README versions called this section "stub
+> verification" and expected 501; the actual handlers are wired and
+> the auth/binding guards activate first, so 401/400 is what you see
+> in Lab 07 state.
 
 </LabStep>
 

@@ -2,11 +2,13 @@ name = "fleet-gateway"
 main = "src/index.js"
 compatibility_date = "2024-09-23"
 
-# Replace YOUR_DOMAIN with your actual domain before deploying.
-# Run: sed -i "s/YOUR_DOMAIN/${DOMAIN}/g" wrangler.toml
+# Replace ep.eplabs.cloud with your slot's full hostname (e.g. 0b38904c.eplabs.cloud)
+# and eplabs.cloud with the actual Cloudflare zone the route binds against
+# (e.g. eplabs.cloud for the in-class shared-zone path; same as DOMAIN for the
+# take-home BYO-domain path). Lab 07 README §3 covers both substitutions.
 routes = [
-    { pattern = "api.YOUR_DOMAIN/v1/*",    zone_name = "YOUR_DOMAIN" },
-    { pattern = "api.YOUR_DOMAIN/relay/*", zone_name = "YOUR_DOMAIN" }
+    { pattern = "api.YOUR_DOMAIN/v1/*",    zone_name = "YOUR_PARENT_ZONE" },
+    { pattern = "api.YOUR_DOMAIN/relay/*", zone_name = "YOUR_PARENT_ZONE" }
 ]
 
 [vars]
@@ -20,29 +22,30 @@ RELAY_BACKEND = "https://app.YOUR_DOMAIN"
 #   wrangler secret put DISCORD_WEBHOOK_URL   # Lab 14: webhook URL for pcap delivery
 
 # ---------------------------------------------------------------------------
-# D1 database binding — uncommented in Lab 09.
+# D1 database binding — UNCOMMENT in Lab 09.
 # 1. Create the database:   wrangler d1 create fleet-database
 # 2. Copy the database_id from the output into the line below.
 # 3. Apply the schema:      bash labs/lab09-d1-database/migrate.sh
+# Lab 07 deploys without this binding (handlers guard against missing FLEET_DB).
 # ---------------------------------------------------------------------------
-[[d1_databases]]
-binding       = "FLEET_DB"
-database_name = "fleet-database"
-database_id   = "YOUR_D1_DATABASE_ID"
+# [[d1_databases]]
+# binding       = "FLEET_DB"
+# database_name = "fleet-database"
+# database_id   = "YOUR_D1_DATABASE_ID"
 
 # ---------------------------------------------------------------------------
-# KV namespace binding — uncommented in Lab 10.
-# 1. Create the namespace:  wrangler kv:namespace create RATE_LIMITS
+# KV namespace binding — UNCOMMENT in Lab 10.
+# 1. Create the namespace:  wrangler kv namespace create RATE_LIMITS
 # 2. Copy the id from the output into the line below.
 # ---------------------------------------------------------------------------
-[[kv_namespaces]]
-binding = "RATE_LIMITS"
-id      = "YOUR_KV_NAMESPACE_ID"
+# [[kv_namespaces]]
+# binding = "RATE_LIMITS"
+# id      = "YOUR_KV_NAMESPACE_ID"
 
 # ---------------------------------------------------------------------------
-# R2 bucket binding — uncommented in Lab 10.
+# R2 bucket binding — UNCOMMENT in Lab 10.
 # 1. Create the bucket:     wrangler r2 bucket create artifacts-bucket
 # ---------------------------------------------------------------------------
-[[r2_buckets]]
-binding     = "ARTIFACTS"
-bucket_name = "artifacts-bucket"
+# [[r2_buckets]]
+# binding     = "ARTIFACTS"
+# bucket_name = "artifacts-bucket"

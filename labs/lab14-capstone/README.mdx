@@ -1,28 +1,47 @@
 ---
-title: "Capstone: emoji to drop exec to R2 to Discord"
+title: "Capstone: emoji to drop exec to R2 to GitHub"
 labNumber: 14
 duration: "75 minutes"
 day: "Day 2, Session 7"
 hardwareRequired: true
 codespaces: "partial"
-widgets: ["CapstoneWalker", "ArchitectureDiagram", "MarkCompleteButton", "ValidateOutputPaster"]
+widgets: ["CapstoneWalker", "ArchitectureDiagram", "EnvironmentToggle", "LabProgress", "LabStep", "EnvBlock", "ValidateOutputPaster", "MarkCompleteButton"]
 ---
 
 import CapstoneWalker from '@widgets/CapstoneWalker.svelte';
 import ArchitectureDiagram from '@widgets/ArchitectureDiagram.svelte';
-import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
+import EnvironmentToggle from '@widgets/EnvironmentToggle.svelte';
+import LabProgress from '@widgets/LabProgress.svelte';
+import LabStep from '@widgets/LabStep.astro';
+import EnvBlock from '@widgets/EnvBlock.astro';
 import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
+import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
 
-# Lab 14 — Capstone: emoji to drop exec to R2 to Discord
+<EnvironmentToggle client:load />
+
+<LabProgress lab="lab14" client:load steps={[
+  { id: 'prereqs',    label: '1. Confirm pre-state' },
+  { id: 'deploy',     label: '2. Deploy run-capture.sh to the Mango' },
+  { id: 'encode',     label: '3. Encode the capture command with EmojiChef' },
+  { id: 'dispatch',   label: '4. Post the emoji command to the GitHub issue' },
+  { id: 'verify-kv',  label: '5. Verify the job is in the KV queue' },
+  { id: 'bridge',     label: '6. Operator bridge: dispatch to the Mango' },
+  { id: 'poll',       label: '7. Poll for completion and retrieve the download URL' },
+  { id: 'pcap',       label: '8. Download and verify the pcap' },
+  { id: 'result',     label: '9. Confirm the result comment on the issue' },
+  { id: 'audit',      label: '10. Verify the D1 audit chain' },
+  { id: 'validate',   label: 'Run validation' },
+]} />
+
+# Lab 14 — Capstone: emoji to drop exec to R2 to GitHub
 
 **Duration: 75 minutes**
-**Day:** 2, Session 6
 
-This is the lab you have been building toward for two days. A Discord message containing an
-emoji-encoded "capture 30" command triggers a chain of events that ends with a pcap file
-landing in your Discord channel as a signed R2 URL — delivered by the Mango drop device
-you flashed and deployed in Lab 12, routed through the Worker you have been incrementally
-building since Lab 07.
+This is the lab you have been building toward for two days. A GitHub issue comment
+containing an emoji-encoded "capture 30" command triggers a chain of events that ends
+with a pcap file landing as a signed R2 URL in a GitHub issue comment on the student's
+command-queue issue, delivered by the Mango drop device you flashed and deployed in
+Lab 12, routed through the Worker you have been incrementally building since Lab 07.
 
 Nothing in this lab is new infrastructure. Everything uses endpoints and scripts that
 already exist. The capstone is integration: making the full chain run reliably under a
@@ -32,7 +51,7 @@ time constraint.
 
 ## Walk through the round-trip before you do it manually
 
-The animation below shows the exact sequence you are about to execute — step by step, with
+The animation below shows the exact sequence you are about to execute, step by step, with
 the payload at each hop. Click through it once before proceeding to the manual walkthrough.
 Each step corresponds to a numbered section below.
 
@@ -58,148 +77,212 @@ Each step corresponds to a numbered section below.
 
 ---
 
-## Pre-state
+## Where each step runs
+
+The capstone exercises both environments. The operator console drives most
+of the round-trip; the Mango runs the capture and shells back through
+Tailscale.
+
+| Step | Operator console | Mango bench |
+|------|:----------------:|:-----------:|
+| 1. Confirm pre-state | yes | reachable over tailnet |
+| 2. Deploy run-capture.sh to the Mango | scp from console | receives the script |
+| 3. Encode the capture command | yes | – |
+| 4. Post the emoji command | yes (browser or gh CLI) | – |
+| 5. Verify the job is in the KV queue | yes | – |
+| 6. Operator bridge: dispatch to the Mango | yes | executes the capture |
+| 7. Poll for completion | yes | – |
+| 8. Download and verify the pcap | yes | – |
+| 9. Confirm the result comment | yes | – |
+| 10. Verify the D1 audit chain | yes | – |
+| Validation | yes | reachable over tailnet |
+
+<EnvBlock env="codespace">
+
+> **Codespace users.** The operator-bridge dispatch in step 6 issues a
+> Tailscale `tailscale ssh drop-<slot>` from the operator console. In a
+> Codespace this works because the Codespace itself is on the tailnet
+> (Tailscale runs in userspace mode when `$CODESPACES` is set). The Mango
+> must already be reachable under MagicDNS (`tailscale ping
+> drop-<slot>`).
+
+</EnvBlock>
+
+<EnvBlock env="local-dev,minimal-local">
+
+> **Local Dev / Minimal local.** The operator console must be on the
+> tailnet for step 6. If `tailscale status` does not show the Mango, run
+> `tailscale up` and re-check before proceeding.
+
+</EnvBlock>
+
+---
+
+<LabStep lab="lab14" id="prereqs" num={1} title="Confirm pre-state">
 
 All Labs 01-13 must be complete and validated.
 
 ```sh
 # Mango is enrolled and reachable
-tailscale ping drop-&#36;\{STUDENT\}   # should succeed
+tailscale ping drop-${STUDENT_SLOT}   # should succeed
 
 # Worker health check
-curl -sf https://api.&#36;\{DOMAIN\}/v1/health | grep '"ok":true'
+curl -sf https://api.${DOMAIN}/v1/health | grep '"ok":true'
 
 # D1 has at least one device row from Lab 12
 curl -sf \
-    -H "CF-Access-Client-Id: &#36;\{SERVICE_TOKEN_ID\}" \
-    -H "CF-Access-Client-Secret: &#36;\{SERVICE_TOKEN_SECRET\}" \
-    "https://api.&#36;\{DOMAIN\}/v1/devices" | grep "drop-&#36;\{STUDENT\}"
+    -H "CF-Access-Client-Id: ${SERVICE_TOKEN_ID}" \
+    -H "CF-Access-Client-Secret: ${SERVICE_TOKEN_SECRET}" \
+    "https://api.${DOMAIN}/v1/devices" | grep "drop-${STUDENT_SLOT}"
 
 # KV relay_profile is set (Lab 13)
-wrangler kv:key get --binding RATE_LIMITS relay_profile | grep user_agent_pattern
+wrangler kv key get --binding RATE_LIMITS --remote relay_profile | grep user_agent_pattern
 
-# DISCORD_WEBHOOK_URL is set as a Worker secret (Lab 14 setup step below)
-wrangler secret list | grep DISCORD_WEBHOOK_URL || echo "set this secret before proceeding"
+# GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO, GITHUB_ISSUE_NUMBER, STUDENT_SLOT are set
+echo "GITHUB_OWNER=${GITHUB_OWNER} GITHUB_REPO=${GITHUB_REPO} ISSUE=${GITHUB_ISSUE_NUMBER} SLOT=${STUDENT_SLOT}"
+
+# Worker secret GITHUB_WEBHOOK_SECRET is set
+wrangler secret list | grep GITHUB_WEBHOOK_SECRET || echo "set this secret before proceeding"
+wrangler secret list | grep GITHUB_TOKEN          || echo "set GITHUB_TOKEN before proceeding"
 ```
+
+</LabStep>
 
 ---
 
-## Setup: configure the Discord webhook
-
-The Worker uses `DISCORD_WEBHOOK_URL` to post the signed pcap URL back to Discord after the
-Mango finishes the capture. Set it once:
-
-1. In your Discord server, open the channel you want the bot to post in.
-2. Channel Settings > Integrations > Webhooks > New Webhook.
-3. Copy the webhook URL.
-4. Set it as a Worker secret:
-
-```sh
-cd courses/engagement-platform-labs/labs/lab07-first-worker/worker
-npx wrangler secret put DISCORD_WEBHOOK_URL
-# Paste the webhook URL at the prompt
-```
-
-Verify:
-
-```sh
-npx wrangler secret list
-# DISCORD_WEBHOOK_URL  should appear
-```
-
-Redeploy the Worker after setting the secret:
-
-```sh
-npx wrangler deploy
-```
-
----
-
-## Walkthrough
-
-### 1. Deploy run-capture.sh to the Mango
+<LabStep lab="lab14" id="deploy" num={2} title="Deploy run-capture.sh to the Mango">
 
 `run-capture.sh` is the script that the Mango executes when the operator dispatches a
-"capture" command. Copy it to the Mango over the tailnet:
+"capture" command. It also posts the result comment to the GitHub issue. Export the
+required environment variables before deploying so they are baked into the Mango's
+environment on each dispatch.
+
+Copy the script to the Mango over the tailnet:
 
 ```sh
 SCRIPT="courses/engagement-platform-labs/labs/lab14-capstone/run-capture.sh"
-tailscale ssh root@drop-&#36;\{STUDENT\} 'mkdir -p /tmp'
+tailscale ssh root@drop-${STUDENT_SLOT} 'mkdir -p /tmp'
 scp -o StrictHostKeyChecking=no \
     "$SCRIPT" \
-    root@drop-&#36;\{STUDENT\}:/tmp/run-capture.sh
-tailscale ssh root@drop-&#36;\{STUDENT\} 'chmod +x /tmp/run-capture.sh'
+    root@drop-${STUDENT_SLOT}:/tmp/run-capture.sh
+tailscale ssh root@drop-${STUDENT_SLOT} 'chmod +x /tmp/run-capture.sh'
 ```
 
 Verify the script is in place:
 
 ```sh
-tailscale ssh root@drop-&#36;\{STUDENT\} 'ls -la /tmp/run-capture.sh && head -3 /tmp/run-capture.sh'
+tailscale ssh root@drop-${STUDENT_SLOT} 'ls -la /tmp/run-capture.sh && head -5 /tmp/run-capture.sh'
 ```
 
 Note: `/tmp` is lost on Mango reboot. Re-deploy the script if the Mango restarts between
 sessions. A production deployment would bake the script into the firmware overlay.
 
-### 2. Encode the capture command with EmojiChef
+</LabStep>
+
+---
+
+<LabStep lab="lab14" id="encode" num={3} title="Encode the capture command with EmojiChef">
 
 The command to encode is `capture 30` (30-second pcap). Use the EmojiChef encoder from
-the Worker's test harness or from the devcontainer:
+the Worker's test harness or from the operator console. The snippet below pads the
+input to a multiple of 3 bytes with NUL before chunking, matching the deployed
+`EmojiChefQuick` class. NUL pad bytes show up as trailing 🍅 (offset 0) in the
+encoded output and the decoder strips them on read:
 
 ```sh
-# Quick Node.js one-liner using the EmojiChef class from the Worker source
 node -e "
-const base = 0x1F345;
+const base = 0x1F345;       // 🍅 tomato
 const bits = 6;
 const text = 'capture 30';
-const bin = [...text].map(c => c.charCodeAt(0).toString(2).padStart(8,'0')).join('');
+const padLen = (3 - text.length % 3) % 3;
+const padded = text + '\0'.repeat(padLen);
+const bin = [...padded].map(c => c.charCodeAt(0).toString(2).padStart(8,'0')).join('');
 const emojis = [];
-for (let i = 0; i+bits <= bin.length; i += bits) {
+for (let i = 0; i + bits <= bin.length; i += bits) {
     emojis.push(String.fromCodePoint(base + parseInt(bin.substr(i,bits),2)));
 }
 console.log(emojis.join(''));
+// expected: 🍝🍻🍊🍵🍢🍌🍚🍷🍞🍗🍅🍸🍑🍅🍅🍅
 "
 ```
 
-Copy the emoji string. You will paste it into Discord in the next step.
+Copy the emoji string. You will paste it into the GitHub issue in the next step.
 
-Alternatively, use the pre-encoded test vector from the workshop spec:
-
-```
-Test decode check: the Chef decodes 🥘🥫🥩🌯🥙🥘 → "status"
-```
-
-Encode `capture 30` yourself using the encoder above and verify by decoding it back.
-
-### 3. Send the emoji command from Discord
-
-In your Discord channel, send a message containing only the emoji string you just encoded.
-
-The Discord webhook is configured in the opposite direction from what you might expect:
-the Cloudflare Worker is the *receiver* (an interactions endpoint or outbound webhook
-target), not the sender. The Workshop uses an **outbound webhook** (Discord's Webhooks
-v2 with event subscriptions) or a simple bot that forwards messages to the Worker.
-
-For the workshop, use the simplest approach: **POST directly to the Worker as if it were
-Discord** — simulating the Discord → Worker call from your devcontainer:
+To verify the round-trip, decode it back to `capture 30`:
 
 ```sh
-# Encode the emoji string (replace with your actual encoded string)
+node -e "
+const base = 0x1F345;
+const e = '🍝🍻🍊🍵🍢🍌🍚🍷🍞🍗🍅🍸🍑🍅🍅🍅';
+const bin = [...e].map(c => (c.codePointAt(0) - base).toString(2).padStart(6,'0')).join('');
+const decoded = (bin.match(/.{8}/g) || [])
+    .map(b => String.fromCharCode(parseInt(b, 2))).join('').replace(/\0+\$/, '');
+console.log(JSON.stringify(decoded));
+// expected: \"capture 30\"
+"
+```
+
+</LabStep>
+
+---
+
+<LabStep lab="lab14" id="dispatch" num={4} title="Post the emoji command to the GitHub issue">
+
+The chatops endpoint for this capstone is `POST /v1/chatops/github`. The Worker
+receives GitHub `issue_comment` webhook events, verifies the HMAC-SHA256 signature,
+applies the allow-list and prefix gate, and decodes the emoji payload.
+
+**Option A: post directly on GitHub.com (real webhook flow)**
+
+Open your student command-queue issue (`https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/issues/${GITHUB_ISSUE_NUMBER}`)
+and post a comment of the form:
+
+```
+@alpha <paste your emoji string here>
+```
+
+Replace `alpha` with your student slot. The GitHub webhook fires at the Worker automatically.
+
+**Option B: simulate from the devcontainer (no webhook configured yet)**
+
+This simulates the GitHub webhook POST directly:
+
+```sh
 EMOJI_CMD="<paste your emoji string here>"
 
-# Post to the Worker chatops endpoint
+# Build the payload GitHub would send for an issue_comment event
+PAYLOAD=$(cat <<EOF
+{
+  "action": "created",
+  "issue": {"number": ${GITHUB_ISSUE_NUMBER}},
+  "comment": {
+    "body": "@${STUDENT_SLOT} ${EMOJI_CMD}",
+    "user": {"login": "${GITHUB_OWNER}", "type": "User"}
+  },
+  "repository": {
+    "name": "${GITHUB_REPO}",
+    "owner": {"login": "${GITHUB_OWNER}"}
+  }
+}
+EOF
+)
+
+# Compute HMAC-SHA256 signature
+SIG=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$GITHUB_WEBHOOK_SECRET" -hex | sed 's/.*= //')
+
 JOB_RESPONSE=$(curl -sf \
     -X POST \
     -H "Content-Type: application/json" \
-    -H "CF-Access-Client-Id: &#36;\{SERVICE_TOKEN_ID\}" \
-    -H "CF-Access-Client-Secret: &#36;\{SERVICE_TOKEN_SECRET\}" \
-    -H "X-Signature-Ed25519: $(printf '%064d' 0)" \
-    -H "X-Signature-Timestamp: $(date +%s)" \
-    -d "{\"content\": \"&#36;\{EMOJI_CMD\}\", \"device_id\": \"drop-&#36;\{STUDENT\}\"}" \
-    "https://api.&#36;\{DOMAIN\}/v1/chatops/discord")
+    -H "X-GitHub-Event: issue_comment" \
+    -H "X-Hub-Signature-256: sha256=${SIG}" \
+    -H "CF-Access-Client-Id: ${SERVICE_TOKEN_ID}" \
+    -H "CF-Access-Client-Secret: ${SERVICE_TOKEN_SECRET}" \
+    -d "$PAYLOAD" \
+    "https://api.${DOMAIN}/v1/chatops/github")
 
 echo "$JOB_RESPONSE"
 JOB_ID=$(printf '%s' "$JOB_RESPONSE" | grep -o '"job_id":"[^"]*"' | sed 's/"job_id":"//;s/"//')
-echo "JOB_ID=&#36;\{JOB_ID\}"
+echo "JOB_ID=${JOB_ID}"
 ```
 
 Expected response:
@@ -215,18 +298,17 @@ Expected response:
 }
 ```
 
-Note: The `X-Signature-Ed25519` header is required by the Worker's signature check.
-In this test, we pass a zeroed value; the Worker skips full verification when
-`DISCORD_PUBLIC_KEY` is not set, or you can temporarily unset it for the capstone demo.
-In a real Discord integration the signature comes from Discord's system.
+</LabStep>
 
-### 4. Verify the job is in the KV queue
+---
+
+<LabStep lab="lab14" id="verify-kv" num={5} title="Verify the job is in the KV queue">
 
 ```sh
 curl -sf \
-    -H "CF-Access-Client-Id: &#36;\{SERVICE_TOKEN_ID\}" \
-    -H "CF-Access-Client-Secret: &#36;\{SERVICE_TOKEN_SECRET\}" \
-    "https://api.&#36;\{DOMAIN\}/v1/jobs/&#36;\{JOB_ID\}"
+    -H "CF-Access-Client-Id: ${SERVICE_TOKEN_ID}" \
+    -H "CF-Access-Client-Secret: ${SERVICE_TOKEN_SECRET}" \
+    "https://api.${DOMAIN}/v1/jobs/${JOB_ID}"
 ```
 
 Expected:
@@ -243,55 +325,74 @@ Expected:
 }
 ```
 
-### 5. Dispatch the capture to the Mango (operator bridge step)
+</LabStep>
 
-The Worker cannot initiate Tailscale connections — Workers are stateless edge functions
+---
+
+<LabStep lab="lab14" id="bridge" num={6} title="Operator bridge: dispatch to the Mango">
+
+The Worker cannot initiate Tailscale connections. Workers are stateless edge functions
 running on Cloudflare's network with no persistent state and no access to the tailnet.
 The operator (you, in the devcontainer) is the physical bridge.
 
-Read the job, extract the duration, and dispatch via `tailscale ssh`:
+Read the job, extract the duration, and dispatch via `tailscale ssh`. Export the GitHub
+variables so `run-capture.sh` can post the result comment:
 
 ```sh
 DURATION=$(curl -sf \
-    -H "CF-Access-Client-Id: &#36;\{SERVICE_TOKEN_ID\}" \
-    -H "CF-Access-Client-Secret: &#36;\{SERVICE_TOKEN_SECRET\}" \
-    "https://api.&#36;\{DOMAIN\}/v1/jobs/&#36;\{JOB_ID\}" \
+    -H "CF-Access-Client-Id: ${SERVICE_TOKEN_ID}" \
+    -H "CF-Access-Client-Secret: ${SERVICE_TOKEN_SECRET}" \
+    "https://api.${DOMAIN}/v1/jobs/${JOB_ID}" \
     | grep -o '"args":\["[0-9]*"\]' | grep -o '[0-9]*')
 
-DURATION="&#36;{DURATION:-30}"
+DURATION="${DURATION:-30}"
 
-echo "Dispatching: tailscale ssh root@drop-&#36;\{STUDENT\} 'sh /tmp/run-capture.sh &#36;\{JOB_ID\} &#36;\{DURATION\}'"
-tailscale ssh root@drop-&#36;\{STUDENT\} \
-    "sh /tmp/run-capture.sh &#36;\{JOB_ID\} &#36;\{DURATION\} https://api.&#36;\{DOMAIN\} &#36;\{SERVICE_TOKEN_ID\} &#36;\{SERVICE_TOKEN_SECRET\}"
+tailscale ssh root@drop-${STUDENT_SLOT} \
+    "GITHUB_TOKEN='${GITHUB_TOKEN}' \
+     GITHUB_OWNER='${GITHUB_OWNER}' \
+     GITHUB_REPO='${GITHUB_REPO}' \
+     GITHUB_ISSUE_NUMBER='${GITHUB_ISSUE_NUMBER}' \
+     STUDENT_SLOT='${STUDENT_SLOT}' \
+     sh /tmp/run-capture.sh ${JOB_ID} ${DURATION} \
+         https://api.${DOMAIN} ${SERVICE_TOKEN_ID} ${SERVICE_TOKEN_SECRET}"
 ```
 
 The `run-capture.sh` script on the Mango will:
 
-1. Run `tcpdump-mini -G &#36;\{DURATION\} -W 1 -w /tmp/&#36;\{JOB_ID\}.pcap` (capture for N seconds).
+1. Run `tcpdump-mini -G ${DURATION} -W 1 -w /tmp/${JOB_ID}.pcap` (capture for N seconds).
 2. POST to `/v1/artifacts/upload` to get a signed R2 PUT URL.
 3. PUT the pcap file to R2 via the signed URL.
-4. PATCH `/v1/jobs/&#36;\{JOB_ID\}/complete` to report the artifact_id and duration.
+4. PATCH `/v1/jobs/${JOB_ID}/complete` to report the artifact_id and duration.
+5. POST a result comment to the GitHub issue via the GitHub API.
 
-You should see output from the script streaming back over the SSH connection:
+Expected output streaming back over the SSH connection:
 
 ```
 [run-capture.sh] starting tcpdump-mini for 30s, job=<uuid>
-[run-capture.sh] capture complete, size=NNNN bytes
+[run-capture.sh] capture complete, size=NNNN bytes, duration=30s
 [run-capture.sh] minting upload URL...
-[run-capture.sh] uploading pcap...
+[run-capture.sh] upload URL minted
+[run-capture.sh] uploading pcap (NNNN bytes)...
+[run-capture.sh] upload complete (HTTP 200)
 [run-capture.sh] reporting completion...
-[run-capture.sh] done
+[run-capture.sh] completion reported (HTTP 200)
+[run-capture.sh] result posted to GitHub issue #1 (attempt 1)
+[run-capture.sh] done; pcap removed from /tmp
 ```
 
-### 6. Poll for job completion and retrieve the download URL
+</LabStep>
+
+---
+
+<LabStep lab="lab14" id="poll" num={7} title="Poll for completion and retrieve the download URL">
 
 ```sh
 # Poll until status=complete (timeout 90s)
 for i in $(seq 1 18); do
     RESULT=$(curl -sf \
-        -H "CF-Access-Client-Id: &#36;\{SERVICE_TOKEN_ID\}" \
-        -H "CF-Access-Client-Secret: &#36;\{SERVICE_TOKEN_SECRET\}" \
-        "https://api.&#36;\{DOMAIN\}/v1/jobs/&#36;\{JOB_ID\}" 2>/dev/null)
+        -H "CF-Access-Client-Id: ${SERVICE_TOKEN_ID}" \
+        -H "CF-Access-Client-Secret: ${SERVICE_TOKEN_SECRET}" \
+        "https://api.${DOMAIN}/v1/jobs/${JOB_ID}" 2>/dev/null)
     STATUS=$(printf '%s' "$RESULT" | grep -o '"status":"[^"]*"' | sed 's/"status":"//;s/"//')
     printf 'status=%s\n' "$STATUS"
     if [ "$STATUS" = "complete" ]; then
@@ -307,14 +408,18 @@ Extract the download URL:
 ```sh
 ARTIFACT_ID=$(printf '%s' "$RESULT" | grep -o '"artifact_id":"[^"]*"' | sed 's/"artifact_id":"//;s/"//')
 DOWNLOAD_JSON=$(curl -sf \
-    -H "CF-Access-Client-Id: &#36;\{SERVICE_TOKEN_ID\}" \
-    -H "CF-Access-Client-Secret: &#36;\{SERVICE_TOKEN_SECRET\}" \
-    "https://api.&#36;\{DOMAIN\}/v1/artifacts/&#36;\{ARTIFACT_ID\}")
+    -H "CF-Access-Client-Id: ${SERVICE_TOKEN_ID}" \
+    -H "CF-Access-Client-Secret: ${SERVICE_TOKEN_SECRET}" \
+    "https://api.${DOMAIN}/v1/artifacts/${ARTIFACT_ID}")
 DOWNLOAD_URL=$(printf '%s' "$DOWNLOAD_JSON" | grep -o '"download_url":"[^"]*"' | sed 's/"download_url":"//;s/"//')
-echo "DOWNLOAD_URL=&#36;\{DOWNLOAD_URL\}"
+echo "DOWNLOAD_URL=${DOWNLOAD_URL}"
 ```
 
-### 7. Download and verify the pcap
+</LabStep>
+
+---
+
+<LabStep lab="lab14" id="pcap" num={8} title="Download and verify the pcap">
 
 ```sh
 curl -o /tmp/capstone-capture.pcap "$DOWNLOAD_URL"
@@ -322,48 +427,67 @@ ls -lh /tmp/capstone-capture.pcap
 # Non-zero size expected
 
 # Verify pcap magic bytes (0xd4c3b2a1 little-endian or 0xa1b2c3d4 big-endian)
-xxd /tmp/capstone-capture.pcap | head -1
-# Expected: d4c3 b2a1 ...  (pcap LE magic) or a1b2 c3d4 ... (pcap BE magic)
+od -A x -t x1z /tmp/capstone-capture.pcap | head -2
+# Expected: d4c3 b2a1 ... (pcap LE magic) or a1b2 c3d4 ... (pcap BE magic)
 ```
 
-If `xxd` is not available:
+</LabStep>
+
+---
+
+<LabStep lab="lab14" id="result" num={9} title="Confirm the result comment on the issue">
+
+Open the command-queue issue and locate the result comment posted by `run-capture.sh`.
+It will appear after the operator posts the emoji command. The comment body shape is:
+
+```
+[eplabs:result] @alpha capture complete
+download: https://...r2.cloudflarestorage.com/...
+artifact: <uuid>.pcap
+duration: 30s
+size: NNNN bytes
+job: <uuid>
+```
+
+The `[eplabs:result]` sentinel at the start of the body is the loop-protection marker.
+The Worker's `issue_comment` handler skips any incoming comment that begins with this
+sentinel (and any comment from a Bot account) so the result post does not re-trigger
+the pipeline.
+
+You can also verify the comment was created via the GitHub API:
 
 ```sh
-od -A x -t x1z /tmp/capstone-capture.pcap | head -2
+curl -sf \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues/${GITHUB_ISSUE_NUMBER}/comments" \
+    | grep -A5 'eplabs:result'
 ```
 
-### 8. Check the Discord notification
+</LabStep>
 
-The Worker posts a message to the Discord webhook when `PATCH /v1/jobs/&lt;id&gt;/complete` is
-processed. Check your Discord channel for a message like:
+---
 
-```
-Capture complete for job <uuid>
-Device: drop-alpha
-Duration: 30s
-Download pcap (1 hour): https://...r2.cloudflarestorage.com/...
-```
-
-If the Discord message did not appear: verify `DISCORD_WEBHOOK_URL` is set
-(`wrangler secret list`) and that the Worker was redeployed after setting the secret.
-
-### 9. Verify the D1 audit chain
+<LabStep lab="lab14" id="audit" num={10} title="Verify the D1 audit chain">
 
 ```sh
 wrangler d1 execute fleet-database \
     --command "SELECT action, details, created_at FROM audit_log \
-               WHERE details LIKE '%&#36;\{JOB_ID\}%' ORDER BY created_at ASC"
+               WHERE details LIKE '%${JOB_ID}%' ORDER BY created_at ASC"
 ```
 
 Expected chain (at least these rows, in order):
 
 | action | details |
 |---|---|
-| `chatops_dispatch` | `{"emoji":"...","decoded":"capture 30","command":"capture","job_id":"&lt;uuid&gt;"}` |
-| `command_dispatch` | `{"job_id":"&lt;uuid&gt;","command":"capture",...}` (if dispatched via /v1/commands) |
-| `exec_finished` | `{"job_id":"&lt;uuid&gt;","artifact_id":"...","exit_code":0,...}` |
+| `chatops_dispatch` | `{"emoji":"...","decoded":"capture 30","command":"capture","job_id":"<uuid>"}` |
+| `command_dispatch` | `{"job_id":"<uuid>","command":"capture",...}` |
+| `exec_finished` | `{"job_id":"<uuid>","artifact_id":"...","exit_code":0,...}` |
 
 Five or more rows is the validation target (the validate.sh script checks for this).
+
+</LabStep>
 
 ---
 
@@ -373,27 +497,65 @@ When this lab is complete:
 
 - [ ] Job created in KV with `status=complete`.
 - [ ] pcap file is non-zero and starts with the pcap magic bytes.
-- [ ] R2 artifact is reachable via the signed download URL.
-- [ ] Discord channel received the signed URL message.
+- [ ] R2 artifact is reachable via the signed download URL (HEAD returns 200).
+- [ ] GitHub issue #`${GITHUB_ISSUE_NUMBER}` has a result comment beginning with
+      `[eplabs:result] @${STUDENT_SLOT}` and containing a `download:` line.
 - [ ] D1 `audit_log` has 5+ rows for the job_id (chatops_dispatch through exec_finished).
-- [ ] Round-trip completed in under 60 seconds (from sending the Discord emoji to receiving
-      the download URL).
+- [ ] Round-trip completed in under 60 seconds (from posting the emoji comment to
+      the result comment appearing on the issue).
 
 ---
 
 ## Validation
 
+Three paths to verify the full round-trip:
+
+**Path 1: automated script (recommended)**
+
 ```sh
 export DOMAIN="<your-domain>"
-export STUDENT="<your-slot>"
+export STUDENT_SLOT="<your-slot>"
 export SERVICE_TOKEN_ID="<from lab08>"
 export SERVICE_TOKEN_SECRET="<from lab08>"
+export GITHUB_TOKEN="<your-token>"
+export GITHUB_OWNER="<owner>"
+export GITHUB_REPO="<repo>"
+export GITHUB_ISSUE_NUMBER="1"
 chmod +x courses/engagement-platform-labs/labs/lab14-capstone/validate.sh
 courses/engagement-platform-labs/labs/lab14-capstone/validate.sh
 ```
 
-The validate script orchestrates the full round-trip automatically. Watch the output — it
-prints each assertion as it passes.
+The script orchestrates the full round-trip automatically. Watch the output; it prints
+each assertion as it passes.
+
+**Path 2: GitHub API poll (manual)**
+
+After completing the walkthrough steps above, run:
+
+```sh
+curl -sf \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues/${GITHUB_ISSUE_NUMBER}/comments" \
+  | python3 -c "
+import json, sys
+comments = json.load(sys.stdin)
+results = [c for c in comments if c['body'].startswith('[eplabs:result]')]
+if not results:
+    print('FAIL: no [eplabs:result] comment found')
+    raise SystemExit(1)
+latest = results[-1]
+print('ok   result comment id=%s' % latest['id'])
+print(latest['body'][:240])
+"
+```
+
+**Path 3: browser**
+
+Open the command-queue issue in your browser. Confirm a comment beginning with
+`[eplabs:result]` and containing a `download:` link is present. Click the link; the
+browser should download the pcap.
 
 <ValidateOutputPaster client:load lab="lab14" />
 
@@ -404,24 +566,24 @@ prints each assertion as it passes.
 <details>
 <summary>EmojiChef decode returns garbage or fails</summary>
 
-The emoji string must contain only codepoints in the range U+1F345-U+1F37F. If you typed
-the emojis manually, verify them with:
+The emoji string must contain only codepoints in the range U+1F345 (🍅) to U+1F384 (🎄).
+If you typed the emojis manually, verify them with:
 
 ```sh
 node -e "const s='<your string>'; [...s].forEach(e => console.log(e, 'U+'+e.codePointAt(0).toString(16).toUpperCase()))"
 ```
 
 Any codepoint outside the range will cause a decode error. Use the Node.js encoder from
-Step 2 to generate the canonical string.
+Step 3 to generate the canonical string.
 
 </details>
 
 <details>
-<summary>tailscale ssh fails to reach drop-&#36;\{STUDENT\}</summary>
+<summary>tailscale ssh fails to reach drop-${STUDENT_SLOT}</summary>
 
-Run `tailscale status` in the devcontainer. If `drop-&#36;\{STUDENT\}` is not listed, the Mango
-may have lost its ExtRoot overlay (USB disconnected, or the Mango rebooted without USB
-present). Re-plug the USB, then run:
+Run `tailscale status` in the devcontainer. If `drop-${STUDENT_SLOT}` is not listed,
+the Mango may have lost its ExtRoot overlay (USB disconnected, or the Mango rebooted
+without USB present). Re-plug the USB, then run:
 
 ```sh
 ssh root@192.168.8.1 '/etc/init.d/tailscale restart'
@@ -444,18 +606,38 @@ the Mango firmware is not the sealed image from Lab 12. Flash the sealed image a
 
 The signed PUT URL from `/v1/artifacts/upload` has a 15-minute TTL. If more than 15 minutes
 passed between minting the URL and the PUT, the URL is expired. Run `run-capture.sh` again
-with the same job_id — it mints a fresh URL each time.
+with the same job_id; it mints a fresh URL each time.
 
 Also confirm the R2 binding is active: `wrangler r2 bucket list` should show `artifacts-bucket`.
 
 </details>
 
 <details>
+<summary>GitHub comment POST fails (HTTP 401 or 403)</summary>
+
+`GITHUB_TOKEN` must be a personal access token (or a fine-grained token) with at least
+`repo` scope (or `issues: write` for fine-grained tokens) on the target repository.
+Verify it is exported correctly in the environment before calling `tailscale ssh`.
+
+Test the token independently:
+
+```sh
+curl -sf \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues/${GITHUB_ISSUE_NUMBER}/comments" \
+  | python3 -m json.tool | head -20
+# Should list existing comments without error
+```
+
+</details>
+
+<details>
 <summary>PATCH /v1/jobs/&lt;id&gt;/complete returns 404</summary>
 
-Check the Worker route for the `/relay/*` and `/v1/jobs/*/complete` paths. A 404 from the
-Worker means the path did not match any route case. Verify the Worker was deployed after
-Lab 14's changes to `src/index.js` were merged in.
+Check the Worker route for the `/v1/jobs/*/complete` path. A 404 from the Worker means
+the path did not match any route case. Verify the Worker was deployed after Lab 14's
+changes to `src/index.js` were merged in.
 
 ```sh
 npx wrangler deploy --dry-run  # verify the Worker parses cleanly
@@ -465,38 +647,47 @@ npx wrangler deploy
 </details>
 
 <details>
-<summary>Discord webhook message never arrives</summary>
+<summary>Result comment does not appear; Worker re-triggers on its own post</summary>
 
-1. Confirm `DISCORD_WEBHOOK_URL` is set: `wrangler secret list`.
-2. Test the webhook independently:
-
-```sh
-curl -X POST "$DISCORD_WEBHOOK_URL" \
-    -H "Content-Type: application/json" \
-    -d '{"content":"webhook test from capstone"}'
-# Expected: HTTP 204 No Content
-```
-
-3. Check `wrangler tail` output when the Mango calls PATCH /v1/jobs/&lt;id&gt;/complete — look for
-   "Discord webhook error" log lines.
+The loop protection relies on `run-capture.sh` posting the comment directly (not via the
+Worker). If you route the result through the Worker and the Worker posts the comment under
+its own identity, ensure the Worker's `issue_comment` handler checks for the
+`[eplabs:result]` prefix before processing. See `dispatch-flow.md` for the sentinel
+contract.
 
 </details>
 
 ---
 
-## Take-home extension
+## Primitives and drop-in substitutes
 
-**Automate the operator-bridge step.** The manual `tailscale ssh ... run-capture.sh`
-dispatch is intentionally explicit in the workshop — it exposes the architectural seam
-between the Worker and the tailnet. As a take-home exercise, write a small polling daemon
-(Python or shell, running persistently in the devcontainer) that:
+The result delivery channel in this lab is a GitHub issue comment. The same pattern
+applies to other channels with minimal changes to `run-capture.sh`:
 
-1. Polls `GET /v1/jobs/<device_id>` every 5 seconds for queued jobs.
-2. For each queued "capture" job, dispatches via `tailscale ssh` automatically.
-3. Logs dispatched jobs to avoid re-dispatching on the next poll.
+| Channel | Change required |
+|---|---|
+| **Discord** | `notify_discord()` is already in `run-capture.sh`, gated on `DISCORD_WEBHOOK_URL`. Set that env var to enable it as an extra channel. |
+| **Slack** | Replace the GitHub comment POST with a POST to `https://hooks.slack.com/services/...` using Slack's incoming webhook JSON schema (`{"text": "..."}` or `{"blocks": [...]}`). |
+| **Mattermost** | Same incoming webhook format as Slack; only the URL changes. |
+| **Matrix** | POST to `https://<homeserver>/_matrix/client/v3/rooms/<room_id>/send/m.room.message` with a Bearer token and `{"msgtype": "m.text", "body": "..."}` body. |
+| **Telegram** | POST to `https://api.telegram.org/bot<token>/sendMessage` with `{"chat_id": "<id>", "text": "..."}`. |
+| **MQTT broker** | `mosquitto_pub -h <broker> -t eplabs/results -m "[eplabs:result] @${STUDENT_SLOT} ..."`. No HTTP required; useful for air-gapped ops nets. |
+| **Custom HTTPS webhook** | Any HTTP endpoint that accepts a JSON POST. Adjust the curl command and authentication header as needed. |
 
-This makes the capstone round-trip fully autonomous — the operator only types in Discord
-and the rest happens automatically.
+For each substitute, the `[eplabs:result]` sentinel prefix and the `download:` line
+on the second line of the body should be preserved so that any automated consumers
+can parse the result consistently.
+
+---
+
+## Further reading
+
+- [GitHub Webhooks documentation](https://docs.github.com/en/webhooks/about-webhooks)
+- [GitHub REST API: create an issue comment](https://docs.github.com/en/rest/issues/comments#create-an-issue-comment)
+- [Cloudflare R2: presigned URLs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/)
+- [Cloudflare Workers: KV](https://developers.cloudflare.com/kv/)
+- [Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh)
+- [tcpdump man page](https://www.tcpdump.org/manpages/tcpdump.1.html)
 
 ---
 

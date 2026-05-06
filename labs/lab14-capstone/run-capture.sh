@@ -15,17 +15,41 @@
 #   service_token_id    — CF Access service token id
 #   service_token_secret — CF Access service token secret
 #
+# Required environment variables (used by the result-posting step):
+#   GITHUB_TOKEN          — personal access token with repo scope
+#   GITHUB_OWNER          — repository owner (e.g. errantpacket)
+#   GITHUB_REPO           — repository name (e.g. eplabs-student-alpha)
+#   GITHUB_ISSUE_NUMBER   — issue number for the command queue (typically 1)
+#   STUDENT_SLOT          — student slot name, e.g. alpha
+#
 # Environment variables (alternative to positional args):
 #   JOB_ID, DURATION, WORKER_URL, SERVICE_TOKEN_ID, SERVICE_TOKEN_SECRET
+#
+# Optional environment variables:
+#   DISCORD_WEBHOOK_URL   — if set, also posts the result to Discord
+#                           (opt-in extra channel; default: GitHub only)
 #
 # Requirements on the Mango:
 #   - tcpdump-mini (in NOR image, Lab 02 package list)
 #   - curl (in NOR image, Lab 02 package list)
 #   - jsonfilter (in NOR image, Lab 02 package list)
-#   - Upstream internet via WAN (for Worker POST)
+#   - Upstream internet via WAN (for Worker POST and GitHub API)
 #   - /tmp filesystem available (tmpfs, available without ExtRoot)
 
 set -eu
+
+# ---------------------------------------------------------------------------
+# Required environment variables (result delivery)
+# ---------------------------------------------------------------------------
+REQUIRED_GITHUB_VARS="GITHUB_TOKEN GITHUB_OWNER GITHUB_REPO GITHUB_ISSUE_NUMBER STUDENT_SLOT"
+
+for _var in $REQUIRED_GITHUB_VARS; do
+    eval "_val=\${${_var}:-}"
+    if [ -z "$_val" ]; then
+        printf 'ERROR: required env var %s is not set\n' "$_var" >&2
+        exit 1
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # Arguments / environment
@@ -150,7 +174,7 @@ case "$HTTP_STATUS" in
 esac
 
 # ---------------------------------------------------------------------------
-# Step 4: Report completion to the Worker
+# Step 4: Report completion to the Worker; capture signed download URL
 # ---------------------------------------------------------------------------
 log "reporting completion..."
 
@@ -175,19 +199,105 @@ COMPLETE_STATUS=$(curl -sS -o /tmp/complete.body -w '%{http_code}' \
 
 case "$COMPLETE_STATUS" in
     200|201)
-        DOWNLOAD_URL=$(jsonfilter -i /tmp/complete.body -e '@.download_url' 2>/dev/null || echo "")
+        DOWNLOAD_URL=$(jsonfilter -i /tmp/complete.body -e '@.download_url' 2>/dev/null || printf '')
         log "completion reported (HTTP ${COMPLETE_STATUS})"
-        if [ -n "$DOWNLOAD_URL" ]; then
-            log "download URL: ${DOWNLOAD_URL}"
-        fi
         ;;
     *)
         log "WARN: completion report returned HTTP ${COMPLETE_STATUS}"
         log "      body: $(head -c 256 /tmp/complete.body)"
+        DOWNLOAD_URL=""
         ;;
 esac
 
 rm -f /tmp/complete.body
+
+# ---------------------------------------------------------------------------
+# Step 5: Post result comment to GitHub issue
+# ---------------------------------------------------------------------------
+
+# post_github_comment <download_url>
+# Idempotency: the [eplabs:result] sentinel is the loop-protection marker.
+# The Worker filters out replies that begin with that sentinel to prevent
+# re-processing its own posts.
+post_github_comment() {
+    _url="${1:-}"
+    _body=$(cat <<BODY
+[eplabs:result] @${STUDENT_SLOT} capture complete
+download: ${_url}
+artifact: ${ARTIFACT_ID}
+duration: ${ACTUAL_DURATION}s
+size: ${PCAP_SIZE} bytes
+job: ${JOB_ID}
+BODY
+)
+    _attempt=0
+    while [ "$_attempt" -lt 3 ]; do
+        _attempt=$(( _attempt + 1 ))
+        _http=$(curl -fSL -o /tmp/gh_comment.body -w '%{http_code}' \
+            --max-time 30 \
+            -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "User-Agent: eplabs-worker" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues/${GITHUB_ISSUE_NUMBER}/comments" \
+            --data-binary @- <<JSON 2>/dev/null
+{"body": $(printf '%s' "$_body" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$_body")}
+JSON
+        ) || true
+        case "$_http" in
+            201)
+                log "result posted to GitHub issue #${GITHUB_ISSUE_NUMBER} (attempt ${_attempt})"
+                rm -f /tmp/gh_comment.body
+                return 0
+                ;;
+            *)
+                log "WARN: GitHub comment POST returned HTTP ${_http} (attempt ${_attempt})"
+                if [ "$_attempt" -lt 3 ]; then
+                    sleep 3
+                fi
+                ;;
+        esac
+    done
+    log "ERROR: failed to post GitHub comment after 3 attempts"
+    rm -f /tmp/gh_comment.body
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# notify_discord <download_url>
+# Only called when DISCORD_WEBHOOK_URL is set.  Default: GitHub only.
+# ---------------------------------------------------------------------------
+notify_discord() {
+    _url="${1:-}"
+    [ -n "${DISCORD_WEBHOOK_URL:-}" ] || return 0
+    log "posting result to Discord webhook..."
+    _http=$(curl -sS -o /dev/null -w '%{http_code}' \
+        --max-time 30 \
+        -X POST \
+        -H "Content-Type: application/json" \
+        "$DISCORD_WEBHOOK_URL" \
+        --data-binary @- <<JSON 2>/dev/null
+{"content": "[eplabs:result] @${STUDENT_SLOT} capture complete\ndownload: ${_url}\njob: ${JOB_ID}"}
+JSON
+    ) || true
+    case "$_http" in
+        200|204)
+            log "Discord notification sent (HTTP ${_http})"
+            ;;
+        *)
+            log "WARN: Discord webhook returned HTTP ${_http} — continuing"
+            ;;
+    esac
+}
+
+if [ -n "$DOWNLOAD_URL" ]; then
+    post_github_comment "$DOWNLOAD_URL"
+    notify_discord "$DOWNLOAD_URL"
+else
+    log "WARN: no download URL available; skipping result comment"
+fi
 
 # ---------------------------------------------------------------------------
 # Cleanup: remove pcap from /tmp to free RAM

@@ -96,11 +96,11 @@ Before starting this lab confirm all of the following.
 
 ```sh
 # Lab 03 ExtRoot is working (/overlay is on USB)
-ssh root@192.168.8.1 'df -h | grep overlay'
+ssh root@192.168.1.1 'df -h | grep overlay'
 # Expected: /dev/sda1 is /overlay, several GB free
 
 # Tailscale binary is present on the Mango (installed in Lab 03 on ExtRoot)
-ssh root@192.168.8.1 'tailscale --version'
+ssh root@192.168.1.1 'tailscale --version'
 # Expected: a version line, e.g. 1.76.6
 
 # Tailscale is present in the operator console
@@ -205,7 +205,7 @@ build manifest in Step 7.
 Also check the Mango (from your laptop):
 
 ```sh
-ssh root@192.168.8.1 'tailscale --version'
+ssh root@192.168.1.1 'tailscale --version'
 ```
 
 The major.minor version should match the operator console. If the patch
@@ -294,7 +294,7 @@ SSH into it and run the equivalent enrollment command using the device auth key.
 
 ```sh
 # From your laptop
-ssh root@192.168.8.1
+ssh root@192.168.1.1
 ```
 
 Inside the Mango shell:
@@ -355,7 +355,7 @@ Expected output:
 
 ```
 pong from drop-yourname (100.x.x.y) via DERP(ord) in 15ms
-pong from drop-yourname (100.x.x.y) via 192.168.8.1:41641 in 2ms
+pong from drop-yourname (100.x.x.y) via 192.168.1.1:41641 in 2ms
 ```
 
 The first pong may arrive via a DERP relay before a direct path is

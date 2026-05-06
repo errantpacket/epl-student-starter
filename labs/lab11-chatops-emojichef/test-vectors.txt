@@ -2,28 +2,53 @@
 #
 # Encoding parameters:
 #   Base codepoint : 0x1F345 (🍅 tomato)
-#   Max codepoint  : 0x1F37F (🍿 popcorn)
+#   Max codepoint  : 0x1F384 (🎄 christmas tree)
 #   Bits per emoji : 6
-#   Input alphabet : printable ASCII
-#   Padding        : trailing incomplete 8-bit byte is dropped on decode
+#   Range size     : 64 codepoints (offsets 0..63), covering every possible
+#                    6-bit chunk value
+#   Input alphabet : ASCII (any byte sequence; length 1..)
+#   Padding        : encode pads input to the next multiple of 3 bytes with
+#                    NUL (0x00); decode strips trailing NUL pad bytes
+#
+# Round-trip property: lossless for any ASCII input. Encoded output length
+# is always Math.ceil(len(text)/3) * 4 emoji. Length-mod-3 inputs (e.g.
+# "status", "reboot", "HSC") need no padding and produce byte-identical
+# encodings to the pre-padding implementation. The range was extended past
+# 🍿 (popcorn, offset 58) on 2026-05-06 to cover offsets 59..63 with the
+# celebration-block emoji 🎀🎁🎂🎃🎄; before that, byte sequences whose
+# bit-stream chunks happened to land in 59..63 produced emoji outside the
+# documented range and the decoder threw on them. "reboot" was the most
+# visible case (chunk 7 = 61 → 🎂); now it round-trips cleanly.
 #
 # Derivation:
-#   encode(text) = split concat(charcode_binary(each char, 8 bits)) into 6-bit chunks
-#                  → each chunk N maps to codepoint 0x1F345 + N
-#   decode(emojis) = (codepoint - 0x1F345) per emoji → concat 6-bit strings
-#                  → split into 8-bit groups → charcode to ASCII
+#   encode(text):
+#     padded = text + ('\0' * ((3 - len(text)%3) % 3))
+#     bits   = concat(charcode_binary(c, 8 bits) for c in padded)
+#     return  concat(String.fromCodePoint(0x1F345 + parseInt(b, 2))
+#                    for b in chunks_of_6(bits))
+#   decode(emojis):
+#     bits   = concat(codepoint_minus_base_binary(e, 6 bits) for e in emojis)
+#     bytes  = String.fromCharCode(parseInt(b, 2)) for b in chunks_of_8(bits)
+#     return concat(bytes).rstrip('\0')
 #
-# Format: <plaintext> TAB <encoded_emojis> TAB <emoji_count> TAB <note>
+# Last verified : 2026-05-06 by running the Node snippet below
+# Format        : <plaintext> TAB <encoded_emojis> TAB <emoji_count> TAB <note>
 #
-# IMPORTANT: Verify all vectors by running the encoder before using in tests.
-# Quick Node verification:
+# Quick Node verification (re-run if the algorithm changes):
 #   node -e "
 #     const B=0x1F345;
-#     const enc=t=>[...t].map(c=>c.charCodeAt(0).toString(2).padStart(8,'0'))
-#       .join('').match(/.{6}/g).map(s=>String.fromCodePoint(B+parseInt(s,2))).join('');
-#     const dec=e=>[...e].map(c=>(c.codePointAt(0)-B).toString(2).padStart(6,'0'))
-#       .join('').match(/.{8}/g).map(s=>String.fromCharCode(parseInt(s,2))).join('');
-#     ['HSC','status','reboot'].forEach(t=>console.log(t,'->',enc(t),'->',dec(enc(t))));
+#     const enc=t=>{
+#       const pad=(3-t.length%3)%3, padded=t+'\0'.repeat(pad);
+#       return [...padded].map(c=>c.charCodeAt(0).toString(2).padStart(8,'0'))
+#         .join('').match(/.{6}/g).map(s=>String.fromCodePoint(B+parseInt(s,2))).join('');
+#     };
+#     const dec=e=>{
+#       const bin=[...e].map(c=>(c.codePointAt(0)-B).toString(2).padStart(6,'0')).join('');
+#       return (bin.match(/.{8}/g)||[]).map(s=>String.fromCharCode(parseInt(s,2)))
+#         .join('').replace(/\0+\$/,'');
+#     };
+#     ['HSC','status','reboot','capture','list','ping','exec','fetch','capture 30']
+#       .forEach(t=>console.log(t,'->',enc(t),'->',dec(enc(t))));
 #   "
 
 # --- Hand-verified vector (derivation shown below) ---
@@ -31,32 +56,58 @@
 # concat bits: 010010 000101 001101 000011
 # offsets:     18     5      13     3
 # emojis:      🍗     🍊     🍒     🍈
-HSC	🍗🍊🍒🍈	4	hand-verified
+HSC	🍗🍊🍒🍈	4	clean (3 chars, no pad)
 
-# --- Vectors from technical_specifications.md ---
-# NOTE: The spec lists these as canonical. Run the encoder to confirm they
-# match the implementation. The spec vectors for multi-word strings may have
-# been generated with a slightly different bit-alignment; trust the code.
-status	🍡🍼🍖🍦🍢🍌🍚🍸	8	computed: 6 chars × 8 bits = 48 bits → 8 emoji
-reboot	🍡🥤🍖🍀🍐🍯🌯	7	computed: 6 chars × 8 bits = 48 bits → 8 emoji — verify
+# --- Workshop COMMAND_VOCABULARY, encoder-verified 2026-05-06 ---
+# Round-trip-clean (length divisible by 3, no padding required):
+status	🍡🍼🍖🍦🍢🍌🍚🍸	8	clean (6 chars, no pad)
+reboot	🍡🍫🍚🍧🍠🍻🎂🍹	8	clean (6 chars, no pad)
 
-# --- Additional encode tests (run encoder to populate) ---
-# These are provided as encode stubs; run the Node snippet above to fill in
-# the emoji column before using in automated tests.
-ping	<run encoder>	<count>	4 chars × 8 bits = 32 bits → 5 emoji (30 bits used, 2 dropped)
-list	<run encoder>	<count>	4 chars × 8 bits = 32 bits → 5 emoji
-exec	<run encoder>	<count>	4 chars
-ok	<run encoder>	<count>	2 chars × 8 bits = 16 bits → 2 emoji
-capture	<run encoder>	<count>	7 chars × 8 bits = 56 bits → 9 emoji
-cap30	<run encoder>	<count>	5 chars × 8 bits = 40 bits → 6 emoji
+# Round-trip via NUL pad (length not divisible by 3). The trailing 🍅
+# (offset 0) emoji are the NUL pad bytes; decode strips them.
+capture	🍝🍻🍊🍵🍢🍌🍚🍷🍞🍕🍅🍅	12	clean (7 chars + 2 NUL pad → 12 emoji)
+list	🍠🍋🍪🍸🍢🍅🍅🍅	8	clean (4 chars + 2 NUL pad → 8 emoji)
+ping	🍡🍋🍪🍳🍞🍵🍅🍅	8	clean (4 chars + 2 NUL pad → 8 emoji)
+exec	🍞🍜🍦🍪🍝🍵🍅🍅	8	clean (4 chars + 2 NUL pad → 8 emoji)
+fetch	🍞🍫🍚🍹🍝🍻🍥🍅	8	clean (5 chars + 1 NUL pad → 8 emoji)
+
+# Capstone command form. The argument after the space is preserved
+# verbatim; the trailing-NUL pad strips on decode.
+capture 30	🍝🍻🍊🍵🍢🍌🍚🍷🍞🍗🍅🍸🍑🍅🍅🍅	16	clean (10 chars + 2 NUL pad → 16 emoji)
+capture 60	🍝🍻🍊🍵🍢🍌🍚🍷🍞🍗🍅🍻🍑🍅🍅🍅	16	clean (10 chars + 2 NUL pad → 16 emoji)
+
+# --- Edge cases (verifier, 2026-05-06) ---
+a	🍝🍕🍅🍅	4	clean (1 char + 2 NUL pad → 4 emoji)
+ab	🍝🍛🍍🍅	4	clean (2 chars + 1 NUL pad → 4 emoji)
+abc	🍝🍛🍎🍨	4	clean (3 chars, no pad)
+abcdef	🍝🍛🍎🍨🍞🍋🍚🍫	8	clean (6 chars, no pad)
 
 # --- Decode-only test (out-of-range emoji triggers error) ---
 # The following should FAIL decode with an error (codepoint 0x1F32F < base 0x1F345):
 ERROR_CASE	🌯	N/A	U+1F32F is below base; decoder must throw
 
 # --- Boundary test ---
-# Minimum valid emoji: 0x1F345 + 0 = 🍅 → offset 0 → 6-bit value 000000
-# Maximum valid emoji: 0x1F345 + 58 = 0x1F37F = 🍿 → offset 58 → 6-bit value 111010
-# (0x3B = 59 would be 0x1F380 which is out of range)
-MIN_EMOJI	🍅	1	offset 0 (0b000000) — partial byte only; decodes to empty string
-MAX_EMOJI	🍿	1	offset 58 (0b111010) — partial byte only; decodes to empty string
+# Minimum valid emoji: 0x1F345 + 0  = 🍅 → offset 0  → 6-bit value 000000
+# Maximum valid emoji: 0x1F345 + 63 = 0x1F384 = 🎄 → offset 63 → 6-bit value 111111
+# (0x40 = 64 would be 0x1F385 which is out of range)
+# The five extended-range emoji past popcorn (offsets 59..63):
+#   0x1F380 = 🎀 (offset 59, 0b111011)
+#   0x1F381 = 🎁 (offset 60, 0b111100)
+#   0x1F382 = 🎂 (offset 61, 0b111101)
+#   0x1F383 = 🎃 (offset 62, 0b111110)
+#   0x1F384 = 🎄 (offset 63, 0b111111)
+MIN_EMOJI	🍅	1	offset 0  (0b000000); fewer than 8 bits; decodes to empty string
+POPCORN	🍿	1	offset 58 (0b111010); fewer than 8 bits; decodes to empty string
+MAX_EMOJI	🎄	1	offset 63 (0b111111); fewer than 8 bits; decodes to empty string
+
+# --- Earlier WRONG vectors (recorded for forensic reference) ---
+# These vectors appeared in technical_specifications.md, course_description.md,
+# architecture.html, and the lab07 worker source code comments before the
+# 2026-05-06 verification pass. They are wrong: 🥘 (U+1F958), 🥫 (U+1F96B),
+# 🥩 (U+1F969), 🌯 (U+1F32F), 🥙 (U+1F959), 🍱 (U+1F371), 🥤 (U+1F964),
+# 🥓 (U+1F953), 🥨 (U+1F968), 🥯 (U+1F96F) are all OUTSIDE the algorithm's
+# 0x1F345-0x1F37F range. The decoder throws "out-of-range emoji" when given
+# any of them. Listed here so future readers grepping for the wrong forms
+# land on this entry.
+#   WRONG_status	🥘🥫🥩🌯🥙🥘
+#   WRONG_reboot	🍱🥤🥩🥓🥨🥯🌯

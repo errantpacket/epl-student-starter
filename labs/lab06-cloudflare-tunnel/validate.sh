@@ -23,6 +23,7 @@ set -eu
 
 DEVCONTAINER="ep-devcontainer"
 MANIFEST="labs/output/build-manifest.json"
+CF_CONFIG="${CF_CONFIG:-/etc/cloudflared/config.yml}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -82,19 +83,43 @@ assert_contains "/health returns ok value" "$HEALTH_BODY" "ok"
 # 3. cloudflared tunnel is HEALTHY inside the devcontainer
 # ---------------------------------------------------------------------------
 
-# Check that cloudflared process is running
-CF_PROC=$(docker exec "$DEVCONTAINER" sh -c 'pgrep -x cloudflared 2>/dev/null || echo ""')
-if [ -z "$CF_PROC" ]; then
-    fail "cloudflared is not running in the devcontainer — start it with /etc/init.d/cloudflared start"
+# Detect whether we are inside the operator console (Codespace, or a shell
+# already inside the Local Dev Container) or outside it (host shell that
+# needs `docker exec` to reach the container).
+if command -v cloudflared >/dev/null 2>&1; then
+    CF_EXEC=""   # call cloudflared directly
+else
+    CF_EXEC="docker exec ${DEVCONTAINER}"
 fi
-pass "cloudflared process is running in devcontainer (PID: ${CF_PROC})"
 
-# Check tunnel info reports healthy
-CF_INFO=$(docker exec "$DEVCONTAINER" \
-    cloudflared tunnel --config /etc/cloudflared/config.yml info 2>/dev/null) \
-    || fail "cloudflared tunnel info failed — is the config file present at /etc/cloudflared/config.yml?"
+# Check that cloudflared process is running
+CF_PROC=$(${CF_EXEC} sh -c 'pgrep -x cloudflared 2>/dev/null || echo ""')
+if [ -z "$CF_PROC" ]; then
+    fail "cloudflared is not running — start it with 'cloudflared tunnel --config /etc/cloudflared/config.yml run &' (foreground/background) or 'systemctl start cloudflared' (systemd)"
+fi
+pass "cloudflared process is running (PID: ${CF_PROC})"
 
-assert_contains "cloudflared tunnel shows HEALTHY" "$CF_INFO" "HEALTHY"
+# Check tunnel info reports at least one active edge connection.
+#
+# `cloudflared tunnel info` requires the tunnel name/id as a positional
+# argument; current cloudflared (2026.x) does not infer it from --config.
+# Resolve the tunnel id from the config file (or accept TUNNEL_NAME env
+# override), then query JSON output and verify at least one `colo_name`
+# field is present, which indicates a registered edge connection.
+TUNNEL_NAME="${TUNNEL_NAME:-$(${CF_EXEC} sh -c "awk '/^tunnel:/ {print \$2; exit}' ${CF_CONFIG} 2>/dev/null")}"
+if [ -z "$TUNNEL_NAME" ]; then
+    fail "could not determine tunnel id/name — set TUNNEL_NAME=ep-<slot> or place a 'tunnel:' line in ${CF_CONFIG}"
+fi
+
+CF_INFO=$(${CF_EXEC} cloudflared tunnel info --output json "$TUNNEL_NAME" 2>/dev/null) \
+    || fail "cloudflared tunnel info '${TUNNEL_NAME}' failed — confirm the tunnel exists and the credential JSON is in ~/.cloudflared/"
+
+if printf '%s' "$CF_INFO" | grep -q '"colo_name"'; then
+    COLOS=$(printf '%s' "$CF_INFO" | grep -o '"colo_name": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' | sort -u | paste -sd, -)
+    pass "cloudflared tunnel '${TUNNEL_NAME}' has registered edge connections (${COLOS})"
+else
+    fail "cloudflared tunnel '${TUNNEL_NAME}' has no active edge connections — check 'cloudflared tunnel info ${TUNNEL_NAME}' manually"
+fi
 
 # ---------------------------------------------------------------------------
 # 4. DNS CNAME record resolves to cfargotunnel.com

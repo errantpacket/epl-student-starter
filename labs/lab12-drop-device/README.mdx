@@ -1,30 +1,47 @@
 ---
-title: "Drop Device Deployment (Mango)"
+title: "Drop device deployment (Mango)"
 labNumber: 12
 duration: "45 minutes"
 day: "Day 2, Session 5"
 hardwareRequired: true
 codespaces: "partial"
-widgets: ["MarkCompleteButton", "ValidateOutputPaster", "HardwareProfileToggle", "ViewSource"]
+widgets: ["EnvironmentToggle", "LabProgress", "LabStep", "EnvBlock", "HardwareProfileToggle", "ValidateOutputPaster", "MarkCompleteButton", "ViewSource"]
 ---
 
-import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
-import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
+import EnvironmentToggle from '@widgets/EnvironmentToggle.svelte';
+import LabProgress from '@widgets/LabProgress.svelte';
+import LabStep from '@widgets/LabStep.astro';
+import EnvBlock from '@widgets/EnvBlock.astro';
 import HardwareProfileToggle from '@widgets/HardwareProfileToggle.svelte';
+import ValidateOutputPaster from '@widgets/ValidateOutputPaster.svelte';
+import MarkCompleteButton from '@widgets/MarkCompleteButton.svelte';
 import ViewSource from '@widgets/ViewSource.svelte';
 
 <HardwareProfileToggle client:load />
 
-# Lab 12 — Drop Device Deployment (Mango)
+<EnvironmentToggle client:load />
+
+<LabProgress lab="lab12" client:load steps={[
+  { id: 'inspect',      label: '1. Understand what is being baked' },
+  { id: 'tailnet-key',  label: '2. Generate a Tailscale ephemeral auth key' },
+  { id: 'bake',         label: '3. Run bake-secrets.sh' },
+  { id: 'verify-image', label: '4. Verify the sealed image' },
+  { id: 'flash',        label: '5. Flash the Mango' },
+  { id: 'enroll',       label: '6. Plug in USB and power; observe enrollment' },
+  { id: 'power-cycle',  label: '7. Confirm power-cycle behavior' },
+  { id: 'validate',     label: 'Run validation' },
+]} />
+
+# Lab 12 — Drop device deployment (Mango)
 
 **Duration: 45 minutes**
-**Day:** 2, Session 4
 
-The Mango has been with you since Lab 01. Today it graduates from "practice target" to
-"deployed drop device." By the end of this lab, flashing the sealed image to a fresh Mango,
-plugging it into any USB power source with an Ethernet uplink, and walking away is all that
-is required. The device enrolls itself, joins your tailnet, and appears in D1 — with no
-post-boot operator interaction required.
+The Mango has been with you since Lab 01. Today it graduates from
+"practice target" to "deployed drop device." By the end of this lab,
+flashing the sealed image to a fresh Mango, plugging it into any USB
+power source with an Ethernet uplink, and walking away is all that is
+required. The device enrolls itself, joins your tailnet, and appears in
+D1 with no post-boot operator interaction required.
 
 That is the moment this course has been building toward.
 
@@ -32,11 +49,15 @@ That is the moment this course has been building toward.
 
 ## Learning objectives
 
-- Understand baked-secret image building: secrets live in the firmware, not on the wire.
-- Substitute the `99-enroll.sh.template` placeholders at build time using `bake-secrets.sh`.
-- Rebuild the sealed Mango image with `build-drop-mango.sh` and verify the output SHA.
+- Understand baked-secret image building: secrets live in the firmware,
+  not on the wire.
+- Substitute the `99-enroll.sh.template` placeholders at build time
+  using `bake-secrets.sh`.
+- Rebuild the sealed Mango image with `build-drop-mango.sh` and verify
+  the output SHA.
 - Flash and observe self-enrollment via `/v1/devices` and D1 audit_log.
-- Confirm that a second power cycle does NOT re-enroll (the script self-deletes after success).
+- Confirm that a second power cycle does NOT re-enroll (the script
+  self-deletes after success).
 
 ---
 
@@ -45,72 +66,122 @@ That is the moment this course has been building toward.
 Confirm these labs are complete and their artifacts are in place:
 
 ```sh
-# Lab 02 — base Mango image was produced
+# Lab 02. Base Mango image was produced
 ls courses/engagement-platform-labs/labs/output/build-manifest.json
 
-# Lab 05 — tailnet is up; magicDNS works
+# Lab 05. Tailnet is up; magicDNS works
 # (Your Tailscale account is logged in and you can generate auth keys)
-tailscale status 2>/dev/null | grep -E 'drop-|ep-' || echo "tailnet may be partial — ok to proceed"
+tailscale status 2>/dev/null | grep -E 'drop-|ep-' || echo "tailnet may be partial; ok to proceed"
 
-# Lab 08 — CF Access service token produced
+# Lab 08. CF Access service token produced
 ls courses/engagement-platform-labs/labs/lab08-cloudflare-access/output/access-tokens.json
 
-# Lab 09 — Worker D1 enrollment endpoint is live (not stub 501)
-curl -sf https://api.&#36;\{DOMAIN\}/v1/health | grep '"ok":true' && echo "worker ok"
+# Lab 09. Worker D1 enrollment endpoint is live (not stub 501)
+curl -sf https://api.${DOMAIN}/v1/health | grep '"ok":true' && echo "worker ok"
 
 # DOMAIN is exported
-echo "DOMAIN=&#36;\{DOMAIN\}"   # e.g. a00f3f13.eplabs.cloud
+echo "DOMAIN=${DOMAIN}"   # e.g. a00f3f13.eplabs.cloud
 
 # STUDENT slot name is exported (matches Lab 05 tailnet hostname prefix)
-echo "STUDENT=&#36;\{STUDENT\}"  # e.g. alpha — Mango will join as drop-alpha
+echo "STUDENT=${STUDENT}"  # e.g. alpha. Mango will join as drop-alpha
 ```
 
-If `STUDENT` is not set, derive it from your domain or ask the instructor. It must be the
-same slot token used in Lab 05 (`tailscale up --hostname=drop-&#36;\{STUDENT\}`).
+If `STUDENT` is not set, derive it from your domain or ask the
+instructor. It must be the same slot token used in Lab 05
+(`tailscale up --hostname=drop-${STUDENT}`).
+
+<EnvBlock env="codespace">
+
+> **Codespace users.** The bench-side steps (flash via LuCI / sysupgrade,
+> plug-in, observe) require a laptop on the Mango's local network. A
+> Codespace cannot reach 192.168.8.x of a physical Mango. Plan to run
+> steps 1–4 (bake) in the Codespace, then move to a laptop terminal for
+> step 5 (flash) and step 6 (initial enrollment observation). Step 7 and
+> validate.sh can run from either: they hit the public Worker over the
+> tailnet.
+
+</EnvBlock>
+
+<EnvBlock env="local-dev,minimal-local">
+
+> **Local Dev / Minimal local.** Steps 1–4 run in the operator console.
+> Steps 5–7 require a laptop attached to the Mango (LAN port for the
+> initial flash; tailnet via SSH after enrollment).
+
+</EnvBlock>
+
+---
+
+## Where each step runs
+
+The lab spans operator console (bake the image, observe enrollment) and
+bench (flash the Mango, watch it boot).
+
+| Step | Operator console | Mango bench |
+|------|:----------------:|:-----------:|
+| 1. Understand what is being baked | yes | – |
+| 2. Generate a Tailscale ephemeral auth key | yes (browser) | – |
+| 3. Run bake-secrets.sh | yes | – |
+| 4. Verify the sealed image | yes | – |
+| 5. Flash the Mango | – | yes (laptop on LAN) |
+| 6. Plug in USB and power; observe enrollment | yes (poll Worker) | yes (powered on) |
+| 7. Confirm power-cycle behavior | yes (tailscale ssh) | yes (power-cycle) |
+| Validation | yes | reachable over tailnet |
 
 ---
 
 ## Walkthrough
 
-### 1. Understand what is being baked
+<LabStep lab="lab12" id="inspect" num={1} title="Understand what is being baked">
 
-Open `labs/shared/files-mango/etc/uci-defaults/99-enroll.sh.template` and read the top
-block. The four `\{\{PLACEHOLDER\}\}` variables are substituted at build time:
+Open `labs/shared/files-mango/etc/uci-defaults/99-enroll.sh.template` and
+read the top block. The five `{{PLACEHOLDER}}` variables are substituted
+at build time:
 
 | Placeholder | Source |
 |---|---|
-| `\{\{WORKER_URL\}\}` | `wrangler.toml` (your deployed Worker) |
-| `\{\{TAILSCALE_KEY\}\}` | Tailscale admin — generate now |
-| `\{\{SERVICE_TOKEN_ID\}\}` | `lab08-cloudflare-access/output/access-tokens.json` |
-| `\{\{SERVICE_TOKEN_SECRET\}\}` | same file |
-| `\{\{SLOT\}\}` | `drop-&#36;\{STUDENT\}` |
+| `{{WORKER_URL}}` | `wrangler.toml` (your deployed Worker) |
+| `{{TAILSCALE_KEY}}` | Tailscale admin (generate now) |
+| `{{SERVICE_TOKEN_ID}}` | `lab08-cloudflare-access/output/access-tokens.json` |
+| `{{SERVICE_TOKEN_SECRET}}` | same file |
+| `{{SLOT}}` | `drop-${STUDENT}` |
 
 <ViewSource client:visible path="labs/shared/files-mango/etc/uci-defaults/99-enroll.sh.template" />
 
-After the script runs successfully on first boot, it calls `rm -f "$SELF"` and exits. The
-next boot finds no `/etc/uci-defaults/99-enroll.sh` to run; OpenWrt's uci-defaults
-mechanism is satisfied. Tailscale retains its state on the ExtRoot USB overlay. The device
-simply reconnects to the tailnet on subsequent boots without re-enrolling.
+After the script runs successfully on first boot, it calls
+`rm -f "$SELF"` and exits. The next boot finds no
+`/etc/uci-defaults/99-enroll.sh` to run; OpenWrt's uci-defaults
+mechanism is satisfied. Tailscale retains its state on the ExtRoot USB
+overlay. The device simply reconnects to the tailnet on subsequent
+boots without re-enrolling.
 
-### 2. Generate a Tailscale ephemeral auth key
+</LabStep>
 
-In the Tailscale admin console (`login.tailscale.com/admin/settings/keys`):
+<LabStep lab="lab12" id="tailnet-key" num={2} title="Generate a Tailscale ephemeral auth key">
+
+In the Tailscale admin console
+(`login.tailscale.com/admin/settings/keys`):
 
 - Key type: **Reusable: off** (single-use is safer for a drop scenario)
-- Expiry: 1 hour is sufficient for the workshop; use a longer TTL in production
+- Expiry: 1 hour is sufficient for the workshop; use a longer TTL in
+  production
 - Tags: add `tag:device` (the ACL from Lab 05 requires this)
 
-Copy the key. You will pass it to `bake-secrets.sh` via the environment.
+Copy the key. You will pass it to `bake-secrets.sh` via the
+environment.
 
 ```sh
 export TAILSCALE_KEY="tskey-auth-kXXXXXXXXXXXXXX-XXXXXXXXXXXXXXXXXXXXXXXX"
 ```
 
-### 3. Run bake-secrets.sh
+</LabStep>
 
-`bake-secrets.sh` reads the three secret sources, substitutes them into the enrollment
-template, writes the substituted file into a temporary overlay directory, then re-invokes
-the Lab 02 imagebuilder script to produce the sealed image.
+<LabStep lab="lab12" id="bake" num={3} title="Run bake-secrets.sh">
+
+`bake-secrets.sh` reads the three secret sources, substitutes them into
+the enrollment template, writes the substituted file into a temporary
+overlay directory, then re-invokes the Lab 02 imagebuilder script to
+produce the sealed image.
 
 ```sh
 cd courses/engagement-platform-labs/labs/lab12-drop-device
@@ -120,13 +191,19 @@ chmod +x bake-secrets.sh
 
 The script will:
 
-1. Read `lab08-cloudflare-access/output/access-tokens.json` for the service token pair.
+1. Read `lab08-cloudflare-access/output/access-tokens.json` for the
+   service token pair.
 2. Read `TAILSCALE_KEY` from the environment (or prompt if unset).
-3. Read `WORKER_URL` from `lab07-first-worker/worker/wrangler.toml` (or `WORKER_URL` env var).
+3. Read `WORKER_URL` from
+   `lab07-first-worker/worker/wrangler.toml` (or `WORKER_URL` env
+   var).
 4. Substitute all five placeholders into the template.
-5. Write the substituted script to a temporary overlay under `/tmp/bake-$$`.
-6. Call `build-drop-mango.sh` with `FILES_DIR` pointing at the temp overlay.
-7. Move the resulting `.bin` to `labs/output/drop-mango-sealed-&#36;\{STUDENT\}.bin`.
+5. Write the substituted script to a temporary overlay under
+   `/tmp/bake-$$`.
+6. Call `build-drop-mango.sh` with `FILES_DIR` pointing at the temp
+   overlay.
+7. Move the resulting `.bin` to
+   `labs/output/drop-mango-sealed-${STUDENT}.bin`.
 
 Expected output (last few lines):
 
@@ -139,69 +216,84 @@ Expected output (last few lines):
 >>> sealed image: /path/to/labs/output/drop-mango-sealed-alpha.bin
 ```
 
-### 4. Verify the sealed image
+</LabStep>
+
+<LabStep lab="lab12" id="verify-image" num={4} title="Verify the sealed image">
 
 ```sh
-ls -lh courses/engagement-platform-labs/labs/output/drop-mango-sealed-&#36;\{STUDENT\}.bin
+ls -lh courses/engagement-platform-labs/labs/output/drop-mango-sealed-${STUDENT}.bin
 # Should be 7-10 MB, not 0 bytes
 
 # Confirm the enrollment script is present and substituted inside the squashfs.
-# This requires squashfs-tools in the devcontainer.
-unsquashfs -ll courses/engagement-platform-labs/labs/output/drop-mango-sealed-&#36;\{STUDENT\}.bin 2>/dev/null \
+# This requires squashfs-tools in the operator console.
+unsquashfs -ll courses/engagement-platform-labs/labs/output/drop-mango-sealed-${STUDENT}.bin 2>/dev/null \
   | grep 99-enroll || echo "note: unsquashfs not available; verify on device after flash"
 ```
 
-The instructor can also run `sha256sum` and compare against the reference hash in the
-build manifest:
+The instructor can also run `sha256sum` and compare against the
+reference hash in the build manifest:
 
 ```sh
-sha256sum courses/engagement-platform-labs/labs/output/drop-mango-sealed-&#36;\{STUDENT\}.bin
+sha256sum courses/engagement-platform-labs/labs/output/drop-mango-sealed-${STUDENT}.bin
 cat courses/engagement-platform-labs/labs/output/build-manifest.json | grep image_sha256
 ```
 
-### 5. Flash the Mango
+</LabStep>
 
-Use the LuCI web interface or `sysupgrade` from the Mango shell:
+<LabStep lab="lab12" id="flash" num={5} title="Flash the Mango">
 
-**Option A — LuCI (recommended for first flash):**
+Use the LuCI web interface or `sysupgrade` from the Mango shell.
+
+**Option A. LuCI (recommended for first flash):**
 
 1. Connect your laptop to the Mango's LAN port.
 2. Navigate to `http://192.168.8.1`.
 3. System > Backup/Flash Firmware > Flash new firmware image.
-4. Upload `drop-mango-sealed-&#36;\{STUDENT\}.bin`.
-5. Uncheck "Keep settings" — the sealed image must start clean.
-6. Click "Proceed". Wait for the LED to stop blinking (approximately 90 seconds).
+4. Upload `drop-mango-sealed-${STUDENT}.bin`.
+5. Uncheck "Keep settings". The sealed image must start clean.
+6. Click "Proceed". Wait for the LED to stop blinking
+   (approximately 90 seconds).
 
-**Option B — sysupgrade from Mango shell:**
+**Option B. sysupgrade from Mango shell:**
 
 ```sh
-# Copy the image to the Mango first (ensure it's still running original firmware)
-scp courses/engagement-platform-labs/labs/output/drop-mango-sealed-&#36;\{STUDENT\}.bin \
+# Copy the image to the Mango first (ensure it is still running original firmware)
+scp -O courses/engagement-platform-labs/labs/output/drop-mango-sealed-${STUDENT}.bin \
     root@192.168.8.1:/tmp/sealed.bin
 
 # Flash (this disconnects your SSH session immediately)
 ssh root@192.168.8.1 'sysupgrade -n /tmp/sealed.bin'
 ```
 
-The `-n` flag discards any existing overlay configuration, which is correct here — you want
-the sealed secrets and no prior overlay contamination.
+The `-n` flag discards any existing overlay configuration, which is
+correct here. You want the sealed secrets and no prior overlay
+contamination.
 
-### 6. Plug in USB and power; observe enrollment
+> **Note for Codespace users.** Both Option A and Option B require
+> network reachability of `192.168.8.1`, which a Codespace cannot
+> provide. Run this step from a laptop terminal physically attached to
+> the Mango's LAN port.
+
+</LabStep>
+
+<LabStep lab="lab12" id="enroll" num={6} title="Plug in USB and power; observe enrollment">
 
 After the Mango reboots on the new firmware:
 
-1. Plug your formatted USB drive into the Mango's USB-A port (ExtRoot overlay for Lab 03).
-2. Connect Ethernet from the Mango WAN port to your lab network (not your laptop).
+1. Plug your formatted USB drive into the Mango's USB-A port (ExtRoot
+   overlay for Lab 03).
+2. Connect Ethernet from the Mango WAN port to your lab network (not
+   your laptop).
 3. Watch the D1 devices table via the Worker:
 
 ```sh
 # Poll until the drop device appears (timeout ~120s)
 for i in $(seq 1 24); do
     result=$(curl -sf \
-        -H "CF-Access-Client-Id: &#36;\{SERVICE_TOKEN_ID\}" \
-        -H "CF-Access-Client-Secret: &#36;\{SERVICE_TOKEN_SECRET\}" \
-        "https://api.&#36;\{DOMAIN\}/v1/devices" 2>/dev/null)
-    if printf '%s' "$result" | grep -q "drop-&#36;\{STUDENT\}"; then
+        -H "CF-Access-Client-Id: ${SERVICE_TOKEN_ID}" \
+        -H "CF-Access-Client-Secret: ${SERVICE_TOKEN_SECRET}" \
+        "https://api.${DOMAIN}/v1/devices" 2>/dev/null)
+    if printf '%s' "$result" | grep -q "drop-${STUDENT}"; then
         printf '\nenrolled: %s\n' "$result"
         break
     fi
@@ -210,35 +302,41 @@ for i in $(seq 1 24); do
 done
 ```
 
-Expected: a JSON array containing a device row with `"tailscale_hostname":"drop-&#36;\{STUDENT\}.*"`.
+Expected: a JSON array containing a device row with
+`"tailscale_hostname":"drop-${STUDENT}.*"`.
 
-You can also tail the enrollment log directly from the Mango once it has enrolled and
-you can SSH in via tailscale:
+You can also tail the enrollment log directly from the Mango once it
+has enrolled and you can SSH in via tailscale:
 
 ```sh
-tailscale ssh root@drop-&#36;\{STUDENT\} 'cat /tmp/enrollment.log'
+tailscale ssh root@drop-${STUDENT} 'cat /tmp/enrollment.log'
 ```
 
-### 7. Confirm power-cycle behavior
+</LabStep>
 
-Power-cycle the Mango (unplug, wait 5 seconds, replug). After it comes back up, check:
+<LabStep lab="lab12" id="power-cycle" num={7} title="Confirm power-cycle behavior">
+
+Power-cycle the Mango (unplug, wait 5 seconds, replug). After it comes
+back up, check:
 
 ```sh
-tailscale ssh root@drop-&#36;\{STUDENT\} 'ls /etc/uci-defaults/'
+tailscale ssh root@drop-${STUDENT} 'ls /etc/uci-defaults/'
 # Expected: empty or no 99-enroll.sh listed
 ```
 
-The enrollment script deleted itself on first run. The second boot reuses the Tailscale
-state on the ExtRoot overlay. No new enrollment row should appear in D1 (the device_id is
-already registered).
+The enrollment script deleted itself on first run. The second boot
+reuses the Tailscale state on the ExtRoot overlay. No new enrollment
+row should appear in D1 (the device_id is already registered).
 
 ```sh
 curl -sf \
-    -H "CF-Access-Client-Id: &#36;\{SERVICE_TOKEN_ID\}" \
-    -H "CF-Access-Client-Secret: &#36;\{SERVICE_TOKEN_SECRET\}" \
-    "https://api.&#36;\{DOMAIN\}/v1/devices" | grep "drop-&#36;\{STUDENT\}"
+    -H "CF-Access-Client-Id: ${SERVICE_TOKEN_ID}" \
+    -H "CF-Access-Client-Secret: ${SERVICE_TOKEN_SECRET}" \
+    "https://api.${DOMAIN}/v1/devices" | grep "drop-${STUDENT}"
 # Expected: still exactly one row with the original enrolled_at timestamp
 ```
+
+</LabStep>
 
 ---
 
@@ -246,30 +344,170 @@ curl -sf \
 
 When this lab is complete:
 
-- [ ] `labs/output/drop-mango-sealed-&#36;\{STUDENT\}.bin` exists with a recorded SHA256.
+- [ ] `labs/output/drop-mango-sealed-${STUDENT}.bin` exists with a
+      recorded SHA256.
 - [ ] Mango is flashed with the sealed image and reboots successfully.
-- [ ] `/v1/devices` returns a row with `tailscale_hostname` matching `drop-&#36;\{STUDENT\}`.
-- [ ] `enrolled_at` timestamp is within the last 5 minutes (validate.sh checks this).
-- [ ] `tailscale ssh root@drop-&#36;\{STUDENT\}` works from the devcontainer.
-- [ ] `/etc/uci-defaults/99-enroll.sh` is absent from the Mango (self-deleted).
-- [ ] Power-cycling the Mango does not create a duplicate enrollment row.
+- [ ] `/v1/devices` returns a row with `tailscale_hostname` matching
+      `drop-${STUDENT}`.
+- [ ] `enrolled_at` timestamp is within the last 5 minutes (validate.sh
+      checks this).
+- [ ] `tailscale ssh root@drop-${STUDENT}` works from the operator
+      console.
+- [ ] `/etc/uci-defaults/99-enroll.sh` is absent from the Mango
+      (self-deleted).
+- [ ] Power-cycling the Mango does not create a duplicate enrollment
+      row.
+- [ ] `validate.sh` exits 0.
 
 ---
 
 ## Validation
 
+Three validation paths. Pick whichever matches your setup. All three
+call the same `validate.sh` and post the result to the same backend;
+only the delivery channel differs.
+
+**Path 1: `epl` CLI** (recommended from the operator console).
+
 ```sh
 export DOMAIN="<your-domain>"
-export STUDENT="<your-slot>"  # e.g. alpha
+export STUDENT="<your-slot>"
 export SERVICE_TOKEN_ID="<from lab08 output>"
 export SERVICE_TOKEN_SECRET="<from lab08 output>"
-chmod +x courses/engagement-platform-labs/labs/lab12-drop-device/validate.sh
-courses/engagement-platform-labs/labs/lab12-drop-device/validate.sh
+
+epl validate lab12-drop-device
 ```
 
-The script exits 0 on success and prints the failing assertion otherwise.
+**Path 2: direct script.**
+
+```sh
+export DOMAIN="<your-domain>"
+export STUDENT="<your-slot>"
+export SERVICE_TOKEN_ID="<from lab08 output>"
+export SERVICE_TOKEN_SECRET="<from lab08 output>"
+
+bash courses/engagement-platform-labs/labs/lab12-drop-device/validate.sh
+```
+
+Or via the Makefile:
+
+```sh
+cd courses/engagement-platform-labs/labs
+make validate-lab12-drop-device
+```
+
+**Path 3: paste output into the widget.**
+
+Run `validate.sh` anywhere, copy the full terminal output, and paste it
+into the widget below.
+
+**What the script checks:**
+
+1. All four required env vars (`DOMAIN`, `STUDENT`,
+   `SERVICE_TOKEN_ID`, `SERVICE_TOKEN_SECRET`) are set.
+2. `GET /v1/devices` succeeds with the service token (Worker is up,
+   Lab 09 complete).
+3. The response contains a row with `tailscale_hostname` matching
+   `drop-${STUDENT}`.
+4. The matched row's `enrolled_at` is within the last 5 minutes.
 
 <ValidateOutputPaster client:load lab="lab12" />
+
+---
+
+## Primitives and drop-in substitutes
+
+Lab 12 stacks three primitives. The image-build pipeline (declarative
+firmware assembly with file overlays) is the same one Lab 02
+introduced. The first-boot bootstrap script (a self-deleting
+config-injection runner) is OpenWrt-flavored as `uci-defaults`. The
+device-fleet auth credential (Tailscale ephemeral auth key, single-use,
+short-TTL) gives the device a one-shot path onto the tailnet without
+shipping the operator's long-lived keys in firmware.
+
+### Image bake / configuration injection substitutes
+
+| Name | License | When to consider it |
+|---|---|---|
+| **OpenWrt ImageBuilder + uci-defaults** (this lab) | GPL-2.0+ | declarative; runs once at first boot; right fit for embedded Linux on small flash |
+| **cloud-init** | GPL-3.0 | the cloud-VM standard for first-boot config injection; supports user-data over multiple data sources |
+| **Ignition** (Fedora CoreOS / RHCOS) | Apache-2.0 | JSON-based; designed for immutable container hosts; "one and only one" first-boot semantics |
+| **Yocto Project** | MIT | when image structure is bespoke; full source build |
+| **Buildroot** | GPL-2.0+ | when you want a slimmer build pipeline than Yocto and no package manager at runtime |
+| **Docker / Podman ENTRYPOINT** | Apache-2.0 / Apache-2.0 | container-shaped firmware analogs; bake config into the image at build time |
+| **Packer** | BSL-1.1 | when many OS targets need consistent baked images and you want a single tool to drive cloud and bare-metal builds |
+
+### Self-deleting bootstrap-script substitutes
+
+| Pattern | Storage shape | When to consider it |
+|---|---|---|
+| **uci-defaults** (this lab) | shell scripts under `/etc/uci-defaults/` | OpenWrt's "run once then rm" convention; integrates with the procd boot sequence |
+| **systemd `ConditionPathExists=!/var/lib/.bootstrapped`** | unit file with sentinel guard | the canonical pattern on systemd hosts |
+| **cron `@reboot` plus sentinel file** | cron line plus touch file | works anywhere with cron; portable |
+| **`/etc/rc.local` plus exit-on-sentinel** | shell with `[ -f sentinel ] && exit 0` | the classic SysV path; still works on most embedded distros |
+| **shell with `rm -- "$0"` at end** (this lab) | self-deleting script | minimal; pairs with any of the above when run-once-then-vanish is the goal |
+
+### Device-fleet credential substitutes
+
+| Pattern | Lifecycle | When to consider it |
+|---|---|---|
+| **Tailscale ephemeral auth key** (this lab) | single-use; node disappears on disconnect | drop scenarios; node is meant to be disposable |
+| **Tailscale non-ephemeral one-shot key** | single-use; node persists | when the device should outlive a single auth window |
+| **Tailscale non-ephemeral reusable key** | multi-use; rotation policy | fleet provisioning; rotate annually |
+| **WireGuard pre-shared key** | static | self-hosted; no Tailscale dependency; you handle key distribution |
+| **headscale ephemeral key** | same shape as Tailscale | self-hosted control plane with the Tailscale client |
+| **mTLS client certificate** | issued by your CA; per-device | when the auth target is HTTPS rather than a mesh VPN |
+
+The bake-and-flash pattern is general. OpenWrt's `uci-defaults` is the
+OpenWrt-flavored hook; cloud-init is the cloud-flavored hook. Both run
+once and can self-delete to leave a clean steady-state image.
+
+---
+
+## Further reading
+
+**OpenWrt:**
+
+- [`uci-defaults` reference](https://openwrt.org/docs/guide-developer/uci-defaults).
+  How OpenWrt runs scripts under `/etc/uci-defaults/` exactly once at
+  first boot.
+- [sysupgrade overview](https://openwrt.org/docs/guide-user/installation/sysupgrade.cli).
+  The `-n` flag (drop overlay) versus default behavior (preserve
+  overlay) and why we want `-n` for a sealed image.
+- [ImageBuilder](https://openwrt.org/docs/guide-user/additional-software/imagebuilder).
+  The recipe Lab 02 set up and Lab 12 extends with the secrets overlay.
+
+**Tailscale:**
+
+- [Auth keys](https://tailscale.com/kb/1085/auth-keys/).
+  Reusable vs single-use, ephemeral vs non-ephemeral, tag scoping.
+- [Ephemeral nodes](https://tailscale.com/kb/1111/ephemeral-nodes/).
+  When the node disappears from the tailnet and how that affects ACL
+  state.
+
+**Workshop-internal:**
+
+- [Lab 02: ImageBuilder firmware](../lab02-imagebuilder-firmware/).
+  Where the build pipeline first appeared.
+- [Lab 03: ExtRoot deployment](../lab03-overlay-deployment/). Where the
+  USB ExtRoot overlay was provisioned. The sealed image relies on it
+  for Tailscale state.
+- [Lab 05: Tailscale mesh](../lab05-tailscale-mesh/). Where the tailnet
+  + ACL are configured. The auth key minted in step 2 must be tagged to
+  match the Lab 05 ACL.
+- [Lab 08: Cloudflare Access](../lab08-cloudflare-access/). Where the
+  service token pair is minted that gets baked into the firmware here.
+- [Lab 09: D1 device registry](../lab09-d1-database/). Where
+  `/v1/devices/enroll` becomes a real handler. Step 6 reads the same
+  `/v1/devices` listing endpoint.
+- [Lab 14: Capstone](../lab14-capstone/). Drives the enrolled drop
+  device end-to-end with a real packet capture round-trip.
+
+---
+
+<MarkCompleteButton client:load lab="lab12" />
+
+> View this page's source: [`labs/lab12-drop-device/README.mdx`](https://github.com/errantpacket/OpenWRT_Course/blob/main/courses/engagement-platform-labs/labs/lab12-drop-device/README.mdx)
 
 ---
 
@@ -278,81 +516,87 @@ The script exits 0 on success and prints the failing assertion otherwise.
 <details>
 <summary>bake-secrets.sh: "access-tokens.json not found"</summary>
 
-Lab 08 must be complete. The file is produced when you run Lab 08's step to create a CF
-Access service token. If you skipped that step, re-run Lab 08's service token creation and
-verify `lab08-cloudflare-access/output/access-tokens.json` exists with `service_token_id`
-and `service_token_secret` fields.
+Lab 08 must be complete. The file is produced when you run Lab 08's
+step to create a CF Access service token. If you skipped that step,
+re-run Lab 08's service token creation and verify
+`lab08-cloudflare-access/output/access-tokens.json` exists with
+`service_token_id` and `service_token_secret` fields.
 
 </details>
 
 <details>
 <summary>bake-secrets.sh: "TAILSCALE_KEY not set"</summary>
 
-The script prompts if the variable is unset. Generate a new auth key in the Tailscale
-admin console as described in Step 2, then either export it or paste it at the prompt.
+The script prompts if the variable is unset. Generate a new auth key in
+the Tailscale admin console as described in step 2, then either export
+it or paste it at the prompt.
 
 </details>
 
 <details>
 <summary>Imagebuilder fails: "profile not found"</summary>
 
-Run `docker compose run --rm imagebuilder make info | grep glinet` to confirm the
-`glinet_gl-mt300n-v2` profile is available in your ImageBuilder container. If the container
-image is stale, re-pull: `docker compose pull imagebuilder`.
+Run `docker compose run --rm imagebuilder make info | grep glinet` to
+confirm the `glinet_gl-mt300n-v2` profile is available in your
+ImageBuilder container. If the container image is stale, re-pull:
+`docker compose pull imagebuilder`.
 
 </details>
 
 <details>
 <summary>Mango flashed but enrollment.log is empty or missing</summary>
 
-SSH to the Mango directly on the LAN (192.168.8.1) within the first 2 minutes of boot,
-before the script finishes. Check if 99-enroll.sh is still present:
+SSH to the Mango directly on the LAN (192.168.8.1) within the first 2
+minutes of boot, before the script finishes. Check if 99-enroll.sh is
+still present:
 
 ```sh
 ssh root@192.168.8.1 'ls -la /etc/uci-defaults/'
 ```
 
-If it is present but not yet run, uci-defaults runs during `procd` initialization. Check
-`logread` for errors:
+If it is present but not yet run, uci-defaults runs during `procd`
+initialization. Check `logread` for errors:
 
 ```sh
 ssh root@192.168.8.1 'logread | grep -i enroll'
 ```
 
-Common causes: USB ExtRoot not mounted (tailscale binary not present), no upstream network
-on WAN port.
+Common causes: USB ExtRoot not mounted (tailscale binary not present),
+no upstream network on WAN port.
 
 </details>
 
 <details>
 <summary>Tailscale up fails on Mango: "tailscale: command not found"</summary>
 
-The sealed image does not include tailscale in NOR flash — it installs on the ExtRoot USB in
-Lab 03. If the USB is not plugged in or the ExtRoot overlay is not mounted, tailscale is not
-available. Verify:
+The sealed image does not include tailscale in NOR flash. It installs
+on the ExtRoot USB in Lab 03. If the USB is not plugged in or the
+ExtRoot overlay is not mounted, tailscale is not available. Verify:
 
 ```sh
 ssh root@192.168.8.1 'df -h | grep /overlay'
 # Should show the USB device mounted at /overlay
 ```
 
-If the USB is missing, plug it in, run `block-mount-extroot`, and reboot.
+If the USB is missing, plug it in, run `block-mount-extroot`, and
+reboot.
 
 </details>
 
 <details>
 <summary>D1 shows enrollment but tailscale SSH fails</summary>
 
-The enrollment script posts to D1 before Tailscale finishes settling. Wait 30 seconds after
-enrollment appears in D1, then retry `tailscale ssh root@drop-&#36;\{STUDENT\}`. If it still fails,
-check that the device appears in `tailscale status` on your devcontainer:
+The enrollment script posts to D1 before Tailscale finishes settling.
+Wait 30 seconds after enrollment appears in D1, then retry
+`tailscale ssh root@drop-${STUDENT}`. If it still fails, check that the
+device appears in `tailscale status` on your operator console:
 
 ```sh
-tailscale status | grep drop-&#36;\{STUDENT\}
+tailscale status | grep drop-${STUDENT}
 ```
 
-If absent, the ephemeral auth key may have expired. Regenerate a key, re-run `bake-secrets.sh`,
-and reflash.
+If absent, the ephemeral auth key may have expired. Regenerate a key,
+re-run `bake-secrets.sh`, and reflash.
 
 </details>
 
@@ -360,9 +604,7 @@ and reflash.
 
 ## Take-home extension
 
-See `labs/take-home/lab12-mt3000-drop/README.md` for the MT3000 / WiFi-6 active drop
-variant of this lab.
+See `labs/take-home/lab12-mt3000-drop/README.md` for the MT3000 / WiFi-6
+active drop variant of this lab.
 
 ---
-
-<MarkCompleteButton client:load lab="lab12" />

@@ -11,7 +11,25 @@ if [ -z "$DOMAIN" ]; then
     exit 1
 fi
 
+# CF Access service-token credentials must come from the env when Lab 08 is in
+# front of the Worker. Earlier versions of this script hardcoded placeholder
+# values (`validate-client-id` / `validate-client-secret`) which 401 against a
+# real Access app — see delivery-notes §11.9 (Lab 09 walk).
+CF_ACCESS_CLIENT_ID="${CF_ACCESS_CLIENT_ID:-}"
+CF_ACCESS_CLIENT_SECRET="${CF_ACCESS_CLIENT_SECRET:-}"
+if [ -z "$CF_ACCESS_CLIENT_ID" ] || [ -z "$CF_ACCESS_CLIENT_SECRET" ]; then
+    echo "ERROR: CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET not set."
+    echo "  Export the service-token credentials minted in Lab 08:"
+    echo "    export CF_ACCESS_CLIENT_ID=<...>"
+    echo "    export CF_ACCESS_CLIENT_SECRET=<...>"
+    exit 1
+fi
+
 WORKER_URL="https://api.${DOMAIN}"
+
+# Allow override for non-devcontainer hosts where wrangler is only available
+# via `npx`. The devcontainer ships wrangler on PATH; workstations may not.
+WRANGLER="${WRANGLER:-npx --no-install wrangler}"
 DEVICE_ID="validate-lab09-$(date +%s)"
 PASS=0
 FAIL=0
@@ -27,8 +45,8 @@ echo "=== 1. Device enrollment ==="
 
 ENROLL_RESPONSE=$(curl -sf \
     -X POST "${WORKER_URL}/v1/devices/enroll" \
-    -H "CF-Access-Client-Id: validate-client-id" \
-    -H "CF-Access-Client-Secret: validate-client-secret" \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
     -H "Content-Type: application/json" \
     -d "{
         \"device_id\": \"${DEVICE_ID}\",
@@ -46,8 +64,8 @@ ENROLL_RESPONSE=$(curl -sf \
 # Check HTTP-level status by re-running with status code capture
 ENROLL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
     -X POST "${WORKER_URL}/v1/devices/enroll" \
-    -H "CF-Access-Client-Id: validate-client-id" \
-    -H "CF-Access-Client-Secret: validate-client-secret" \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
     -H "Content-Type: application/json" \
     -d "{
         \"device_id\": \"${DEVICE_ID}\",
@@ -91,8 +109,8 @@ echo "=== 2. Re-enrollment idempotency ==="
 
 curl -sf \
     -X POST "${WORKER_URL}/v1/devices/enroll" \
-    -H "CF-Access-Client-Id: validate-client-id" \
-    -H "CF-Access-Client-Secret: validate-client-secret" \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
     -H "Content-Type: application/json" \
     -d "{
         \"device_id\": \"${DEVICE_ID}\",
@@ -102,7 +120,7 @@ curl -sf \
     }" > /dev/null
 
 # Query D1 directly to confirm only one row exists
-DEVICE_COUNT=$(wrangler d1 execute fleet-database \
+DEVICE_COUNT=$(${WRANGLER} d1 execute fleet-database \
     --command="SELECT COUNT(*) AS cnt FROM devices WHERE device_id='${DEVICE_ID}';" \
     --remote --json 2>/dev/null | jq -r '.[0].results[0].cnt // .[0].cnt // empty' 2>/dev/null || echo "")
 
@@ -118,13 +136,14 @@ fi
 echo ""
 echo "=== 3. Device list ==="
 
-# Obtain a CF Access token if wrangler access token is available
-ACCESS_TOKEN=$(wrangler access token "https://api.${DOMAIN}" 2>/dev/null || echo "")
+# Obtain a CF Access token via cloudflared (pre-installed in the devcontainer).
+ACCESS_TOKEN=$(cloudflared access token --app "https://api.${DOMAIN}" 2>/dev/null || echo "")
 
 if [ -z "$ACCESS_TOKEN" ]; then
-    echo "  SKIP: Could not obtain CF Access JWT via wrangler (not logged in via Access?)."
-    echo "        Run: wrangler access token https://api.${DOMAIN}"
-    echo "        Then re-export ACCESS_TOKEN and curl manually:"
+    echo "  SKIP: Could not obtain CF Access JWT (not logged in via cloudflared?)."
+    echo "        Run: cloudflared access login https://api.${DOMAIN}"
+    echo "        Then: cloudflared access token --app https://api.${DOMAIN}"
+    echo "        Then curl manually:"
     echo "        curl -H \"CF-Access-Jwt-Assertion: \$TOKEN\" ${WORKER_URL}/v1/devices"
 else
     DEVICE_LIST=$(curl -sf \
@@ -163,7 +182,7 @@ fi
 echo ""
 echo "=== 4. Audit log ==="
 
-AUDIT_COUNT=$(wrangler d1 execute fleet-database \
+AUDIT_COUNT=$(${WRANGLER} d1 execute fleet-database \
     --command="SELECT COUNT(*) AS cnt FROM audit_log WHERE device_id='${DEVICE_ID}' AND action='enroll';" \
     --remote --json 2>/dev/null | jq -r '.[0].results[0].cnt // .[0].cnt // empty' 2>/dev/null || echo "")
 
@@ -181,7 +200,7 @@ fi
 echo ""
 echo "=== 5. Schema integrity ==="
 
-TABLES=$(wrangler d1 execute fleet-database \
+TABLES=$(${WRANGLER} d1 execute fleet-database \
     --command="SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;" \
     --remote --json 2>/dev/null | jq -r '.[0].results[].name' 2>/dev/null | sort | tr '\n' ' ')
 

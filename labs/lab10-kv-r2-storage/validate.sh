@@ -11,7 +11,24 @@ if [ -z "$DOMAIN" ]; then
     exit 1
 fi
 
+# CF Access service-token credentials are required when Lab 08 is in front of
+# the Worker (every Worker route under /v1/* is gated). Earlier versions of
+# this script sent unauthenticated requests, which 403 against a real Access
+# app — see delivery-notes §11.9 (Lab 10 walk).
+CF_ACCESS_CLIENT_ID="${CF_ACCESS_CLIENT_ID:-}"
+CF_ACCESS_CLIENT_SECRET="${CF_ACCESS_CLIENT_SECRET:-}"
+if [ -z "$CF_ACCESS_CLIENT_ID" ] || [ -z "$CF_ACCESS_CLIENT_SECRET" ]; then
+    echo "ERROR: CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET not set."
+    echo "  Export the service-token credentials minted in Lab 08:"
+    echo "    export CF_ACCESS_CLIENT_ID=<...>"
+    echo "    export CF_ACCESS_CLIENT_SECRET=<...>"
+    exit 1
+fi
+ACCESS_HEADERS="-H CF-Access-Client-Id:${CF_ACCESS_CLIENT_ID} -H CF-Access-Client-Secret:${CF_ACCESS_CLIENT_SECRET}"
+
 WORKER_URL="https://api.${DOMAIN}"
+
+WRANGLER="${WRANGLER:-npx --no-install wrangler}"
 FIXTURE_DATA="lab10-validate-fixture-$(date +%s)"
 FIXTURE_FILE="/tmp/lab10-fixture-$$.bin"
 RETRIEVED_FILE="/tmp/lab10-retrieved-$$.bin"
@@ -48,6 +65,8 @@ DEVICE_ID="validate-lab10-device"
 
 ENQUEUE_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
     -X POST "${WORKER_URL}/v1/commands/${DEVICE_ID}" \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
     -H "Content-Type: application/json" \
     -d '{"command": "status", "timeout": 60}')
 
@@ -59,6 +78,8 @@ fi
 
 ENQUEUE_RESP=$(curl -s \
     -X POST "${WORKER_URL}/v1/commands/${DEVICE_ID}" \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
     -H "Content-Type: application/json" \
     -d '{"command": "status", "timeout": 60}')
 
@@ -85,6 +106,8 @@ echo "=== 2. Job status read-back ==="
 
 if [ "$JOB_ID" != "missing" ]; then
     JOB_STATUS_HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+        -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+        -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
         "${WORKER_URL}/v1/jobs/${JOB_ID}")
 
     if [ "$JOB_STATUS_HTTP" = "200" ]; then
@@ -93,7 +116,10 @@ if [ "$JOB_ID" != "missing" ]; then
         fail "GET /v1/jobs/${JOB_ID} returned HTTP ${JOB_STATUS_HTTP} (expected 200)"
     fi
 
-    JOB_RESP=$(curl -s "${WORKER_URL}/v1/jobs/${JOB_ID}")
+    JOB_RESP=$(curl -s \
+        -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+        -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
+        "${WORKER_URL}/v1/jobs/${JOB_ID}")
     KV_STATUS=$(echo "$JOB_RESP" | jq -r '.status // empty')
     KV_COMMAND=$(echo "$JOB_RESP" | jq -r '.command // empty')
 
@@ -120,11 +146,15 @@ echo "=== 3. Artifact upload (signed PUT URL) ==="
 
 UPLOAD_RESP=$(curl -s \
     -X POST "${WORKER_URL}/v1/artifacts/upload" \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
     -H "Content-Type: application/json" \
     -d '{"content_type": "application/octet-stream"}')
 
 UPLOAD_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
     -X POST "${WORKER_URL}/v1/artifacts/upload" \
+    -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+    -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
     -H "Content-Type: application/json" \
     -d '{"content_type": "application/octet-stream"}')
 
@@ -150,15 +180,19 @@ if [ -n "$UPLOAD_URL" ]; then
     printf '%s\n' "$FIXTURE_DATA" > "$FIXTURE_FILE"
     ORIGINAL_SHA=$(sha256 "$FIXTURE_FILE")
 
+    # Worker-proxy mode: upload_url points back at the same Worker; same
+    # CF Access service-token gate applies.
     PUT_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
         -X PUT "$UPLOAD_URL" \
+        -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+        -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
         -H "Content-Type: application/octet-stream" \
         --data-binary @"$FIXTURE_FILE")
 
     if [ "$PUT_STATUS" = "200" ]; then
-        pass "PUT to signed upload_url returned HTTP 200"
+        pass "PUT to upload_url returned HTTP 200"
     else
-        fail "PUT to signed upload_url returned HTTP ${PUT_STATUS} (expected 200)"
+        fail "PUT to upload_url returned HTTP ${PUT_STATUS} (expected 200)"
         ARTIFACT_ID="missing"
     fi
 fi
@@ -174,6 +208,8 @@ if [ "$ARTIFACT_ID" != "missing" ] && [ -n "$ARTIFACT_ID" ]; then
     sleep 2
 
     DOWNLOAD_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+        -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+        -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
         "${WORKER_URL}/v1/artifacts/${ARTIFACT_ID}")
 
     if [ "$DOWNLOAD_STATUS" = "200" ]; then
@@ -182,14 +218,22 @@ if [ "$ARTIFACT_ID" != "missing" ] && [ -n "$ARTIFACT_ID" ]; then
         fail "GET /v1/artifacts/${ARTIFACT_ID} returned HTTP ${DOWNLOAD_STATUS} (expected 200)"
     fi
 
-    DOWNLOAD_RESP=$(curl -s "${WORKER_URL}/v1/artifacts/${ARTIFACT_ID}")
+    DOWNLOAD_RESP=$(curl -s \
+        -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+        -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
+        "${WORKER_URL}/v1/artifacts/${ARTIFACT_ID}")
     DOWNLOAD_URL=$(echo "$DOWNLOAD_RESP" | jq -r '.download_url // empty')
 
     if [ -n "$DOWNLOAD_URL" ]; then
         pass "Download response contains download_url"
 
-        curl -sf "$DOWNLOAD_URL" -o "$RETRIEVED_FILE" 2>/dev/null || {
-            fail "Download from signed download_url failed"
+        # Worker-proxy mode: download_url points back at the Worker; same
+        # CF Access service-token gate applies.
+        curl -sf \
+            -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+            -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
+            "$DOWNLOAD_URL" -o "$RETRIEVED_FILE" 2>/dev/null || {
+            fail "Download from download_url failed"
             DOWNLOAD_URL=""
         }
 

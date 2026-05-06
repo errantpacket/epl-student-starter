@@ -28,6 +28,7 @@ RUN apt-get update \
       iperf3 htop \
       wireguard-tools iproute2 iputils-ping dnsutils \
       openssh-client git make \
+      nginx-light \
  && rm -rf /var/lib/apt/lists/*
 
 # Node 20 (NodeSource — wrangler@4 requires Node >= 20)

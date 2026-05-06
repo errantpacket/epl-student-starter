@@ -134,7 +134,7 @@ Copy the emoji string. You will paste it into Discord in the next step.
 Alternatively, use the pre-encoded test vector from the workshop spec:
 
 ```
-Test decode check: the Chef decodes 🥘🥫🥩🌯🥙🥘 → "status"
+Test decode check: the Chef decodes 🍡🍼🍖🍦🍢🍌🍚🍸 → "status"
 ```
 
 Encode `capture 30` yourself using the encoder above and verify by decoding it back.
