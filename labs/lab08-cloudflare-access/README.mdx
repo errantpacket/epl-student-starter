@@ -482,17 +482,29 @@ checking for either 401 or a redirect to `cloudflareaccess.com`.
 </details>
 
 <details>
-<summary>Service token curl returns 401</summary>
+<summary>Service token curl returns 302 or 401</summary>
 
-- Confirm you saved the Client ID and Client Secret correctly. The Client
-  ID ends in `.access` and the Client Secret is a long random string. They
-  are separate; a common mistake is using the same value for both headers.
-- Confirm the service token is attached to the `fleet-gateway-api` Access
-  Application (step 7). A service token exists at the account level but
-  must be explicitly allowed by each Access Application policy.
-- Check token expiry. If the token duration was set to a short value
-  during testing, it may have expired. Regenerate and update
-  `output/access-tokens.json`.
+CF Access has two failure shapes for service tokens, and they point at
+different root causes:
+
+- **HTTP 302** redirect to
+  `*.cloudflareaccess.com/cdn-cgi/access/login/...` — Access does not
+  recognize the credentials at all. The most common cause is that the
+  token was minted in **Service Auth > Service Tokens** but never attached
+  to the Access Application's policy in step 7. A token at the account
+  level is not authorized to reach any application until it is explicitly
+  added to a policy's Include list.
+- **HTTP 401** with a JSON error body — Access recognized the credentials
+  but rejected them. Causes: client ID and client secret swapped (the ID
+  ends in `.access`, the secret does not); the token expired; the token
+  was deleted from Service Auth after it was attached.
+
+In both cases the fix lives in the dashboard: Access > Applications >
+`fleet-gateway-api` > policy `operator-email-allowlist` > Edit, and
+confirm the Service Token selector lists your token under Include. If the
+symptom is 302, the token is missing from that list. If the symptom is
+401, the token is listed but the credentials in your
+`output/access-tokens.json` do not match what Service Auth shows.
 
 </details>
 
